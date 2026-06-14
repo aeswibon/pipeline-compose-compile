@@ -1,0 +1,5 @@
+{
+  "name": "pipeline-compose-compile",
+  "private": true,
+  "description": "GitHub Action published from pipeline-compose monorepo"
+}
