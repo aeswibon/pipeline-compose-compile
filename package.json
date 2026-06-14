@@ -1,0 +1,23 @@
+{
+  "name": "@aeswibon/pipeline-compose-compile",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Compile pipeline-compose YAML to a static GitHub Actions workflow",
+  "scripts": {
+    "build": "tsc --noEmit && pnpm run bundle",
+    "bundle": "ncc build src/compile/index.ts -o dist -s",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "ajv": "^8.17.1",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@vercel/ncc": "^0.38.3",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
