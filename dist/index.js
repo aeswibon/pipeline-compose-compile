@@ -46979,7 +46979,7 @@ function concurrencyFromCodegen(concurrency, fallbackGroup) {
 
 
 const DEFAULT_WORKFLOW_OUTPUT = '.github/workflows/pipeline.yml';
-const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.4.0';
+const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.6.0';
 const DEFAULT_BRANCH = 'master';
 const DEFAULT_TAG_PREFIX = 'v';
 function normalizeWorkflowPath(workflow) {
@@ -47270,14 +47270,14 @@ function collectWorkflowFileDeprecations(repoRoot, relativePath) {
         issues.push({
             level: 'error',
             code: 'uses.monorepo-subpath-deprecated',
-            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.4.0)`,
+            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.6.0)`,
         });
     }
     if (MASTER_PIN.test(content)) {
         issues.push({
             level: 'error',
             code: 'uses.master-pin-deprecated',
-            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.4.0)`,
+            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.6.0)`,
         });
     }
     return issues;
