@@ -46979,7 +46979,7 @@ function concurrencyFromCodegen(concurrency, fallbackGroup) {
 
 
 const DEFAULT_WORKFLOW_OUTPUT = '.github/workflows/pipeline.yml';
-const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.7.0';
+const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.8.0';
 const DEFAULT_BRANCH = 'master';
 const DEFAULT_TAG_PREFIX = 'v';
 function normalizeWorkflowPath(workflow) {
@@ -47270,14 +47270,14 @@ function collectWorkflowFileDeprecations(repoRoot, relativePath) {
         issues.push({
             level: 'error',
             code: 'uses.monorepo-subpath-deprecated',
-            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.7.0)`,
+            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.8.0)`,
         });
     }
     if (MASTER_PIN.test(content)) {
         issues.push({
             level: 'error',
             code: 'uses.master-pin-deprecated',
-            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.7.0)`,
+            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.8.0)`,
         });
     }
     return issues;
@@ -48316,7 +48316,7 @@ var external_node_crypto_ = __nccwpck_require__(7598);
 ;// CONCATENATED MODULE: ../core/dist/lib/smart-rerun.js
 
 const RERUN_STATE_ARTIFACT = 'pipeline-compose-rerun-state';
-function stageFingerprint(stage, inputs, ref) {
+function stageFingerprint(stage, inputs, ref, workflowDigest) {
     const normalizedRef = ref.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '');
     const payload = JSON.stringify({
         id: stage.id,
@@ -48324,6 +48324,7 @@ function stageFingerprint(stage, inputs, ref) {
         repo: stage.repo ?? '',
         ref: normalizedRef,
         when: stage.when ?? '',
+        workflow_digest: workflowDigest ?? '',
         inputs: Object.fromEntries(Object.entries(inputs).sort(([a], [b]) => a.localeCompare(b))),
     });
     return createHash('sha256').update(payload).digest('hex').slice(0, 16);
