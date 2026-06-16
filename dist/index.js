@@ -46561,6 +46561,126 @@ function loadPipelineFromFile(filePath) {
     return loadPipeline({ fileYaml: fs.readFileSync(filePath, 'utf8') });
 }
 
+;// CONCATENATED MODULE: ../core/dist/compile/catalog.js
+
+function collectCatalogStageIssues(stages, catalog) {
+    const issues = [];
+    if (!catalog) {
+        return issues;
+    }
+    for (const [key, entry] of Object.entries(catalog)) {
+        if (!entry.workflow && !entry.pipeline_file) {
+            issues.push({
+                level: 'error',
+                code: 'catalog.invalid-entry',
+                message: `Catalog entry "${key}" must set workflow or pipeline_file`,
+            });
+        }
+        if (entry.workflow && entry.pipeline_file) {
+            issues.push({
+                level: 'error',
+                code: 'catalog.invalid-entry',
+                message: `Catalog entry "${key}" cannot set both workflow and pipeline_file`,
+            });
+        }
+        if ('use' in entry && entry.use) {
+            issues.push({
+                level: 'error',
+                code: 'catalog.invalid-entry',
+                message: `Catalog entry "${key}" must not set use`,
+            });
+        }
+    }
+    for (const stage of stages) {
+        if (!stage.use) {
+            continue;
+        }
+        if (!stage.id) {
+            issues.push({
+                level: 'error',
+                code: 'catalog.missing-id',
+                message: `Stage with use: "${stage.use}" must set id`,
+            });
+        }
+        if (!catalog[stage.use]) {
+            issues.push({
+                level: 'error',
+                code: 'catalog.unknown',
+                message: `Stage "${stage.id ?? stage.use}" references unknown catalog entry "${stage.use}"`,
+            });
+        }
+        if (stage.workflow || stage.pipeline_file) {
+            issues.push({
+                level: 'error',
+                code: 'catalog.conflict',
+                message: `Stage "${stage.id}" cannot set use with workflow or pipeline_file`,
+            });
+        }
+    }
+    return issues;
+}
+function collectDocumentCatalogIssues(doc) {
+    if (!isPipelineV2(doc)) {
+        return collectCatalogStageIssues(doc.stages, doc.catalog);
+    }
+    const issues = [];
+    for (const def of Object.values(doc.pipelines)) {
+        issues.push(...collectCatalogStageIssues(def.stages, doc.catalog));
+    }
+    return issues;
+}
+function mergeCatalogStage(stage, template) {
+    const { use: _use, ...overrides } = stage;
+    return {
+        ...template,
+        ...overrides,
+        id: stage.id,
+        inputs: { ...template.inputs, ...overrides.inputs },
+        outputs: overrides.outputs ?? template.outputs,
+        needs: overrides.needs ?? template.needs,
+    };
+}
+function expandCatalogStage(stage, catalog) {
+    if (!stage.use) {
+        return stage;
+    }
+    const template = catalog[stage.use];
+    if (!template) {
+        throw new Error(`Stage "${stage.id}" references unknown catalog entry "${stage.use}"`);
+    }
+    if (stage.workflow || stage.pipeline_file) {
+        throw new Error(`Stage "${stage.id}" cannot set use with workflow or pipeline_file`);
+    }
+    return mergeCatalogStage(stage, template);
+}
+function expandCatalogStages(stages, catalog, options = {}) {
+    if (!catalog) {
+        return stages;
+    }
+    const issues = collectCatalogStageIssues(stages, catalog);
+    const hasErrors = issues.some((issue) => issue.level === 'error');
+    if (hasErrors && !options.lenientCatalog) {
+        const first = issues.find((issue) => issue.level === 'error');
+        throw new Error(first?.message ?? 'Invalid catalog reference');
+    }
+    return stages.map((stage) => {
+        if (!stage.use) {
+            return stage;
+        }
+        const template = catalog[stage.use];
+        if (!template || stage.workflow || stage.pipeline_file) {
+            return stage;
+        }
+        return mergeCatalogStage(stage, template);
+    });
+}
+function catalogFromDocument(doc) {
+    if (parser_isPipelineV2(doc)) {
+        return doc.catalog;
+    }
+    return doc.catalog;
+}
+
 ;// CONCATENATED MODULE: ../core/dist/compile/pipeline-sort.js
 function sortPipelineDocuments(pipelines) {
     const byName = new Map(pipelines.map((p) => [p.name, p]));
@@ -46621,6 +46741,7 @@ function topo_sort_sortStages(stages) {
 
 
 
+
 function withResolvedStages(pipeline, pipelineKey, lenientNeeds = false) {
     const defaultGroup = pipeline.group ?? pipelineKey;
     const ordered = lenientNeeds ? sortStagesLenient(pipeline.stages) : topo_sort_sortStages(pipeline.stages);
@@ -46641,13 +46762,19 @@ function sortStagesLenient(stages) {
         return stages;
     }
 }
-function pipeline_resolve_pipelineDocumentToList(doc) {
+function pipeline_resolve_pipelineDocumentToList(doc, options = {}) {
+    const catalog = catalogFromDocument(doc);
     if (!parser_isPipelineV2(doc)) {
-        return [doc];
+        return [
+            {
+                ...doc,
+                stages: expandCatalogStages(doc.stages, catalog, options),
+            },
+        ];
     }
-    return Object.entries(doc.pipelines).map(([key, def]) => definitionToPipeline(key, def, doc.groups, doc.concurrency, doc.smart_rerun, def.context_schema));
+    return Object.entries(doc.pipelines).map(([key, def]) => definitionToPipeline(key, def, doc.groups, doc.concurrency, doc.smart_rerun, def.context_schema, catalog, options));
 }
-function definitionToPipeline(key, def, groups, concurrency, smartRerun, contextSchema) {
+function definitionToPipeline(key, def, groups, concurrency, smartRerun, contextSchema, catalog, options = {}) {
     return {
         name: key,
         version: 1,
@@ -46657,7 +46784,7 @@ function definitionToPipeline(key, def, groups, concurrency, smartRerun, context
         concurrency,
         smart_rerun: smartRerun,
         context_schema: contextSchema,
-        stages: def.stages,
+        stages: expandCatalogStages(def.stages, catalog, options),
     };
 }
 function assertUniqueStageIds(pipelines) {
@@ -46701,7 +46828,7 @@ function pipeline_resolve_mergePipelines(pipelines, options = {}) {
     };
 }
 function pipeline_resolve_resolvePipelineDocumentForReport(doc) {
-    const merged = pipeline_resolve_mergePipelines(pipeline_resolve_pipelineDocumentToList(doc), { lenientNeeds: true });
+    const merged = pipeline_resolve_mergePipelines(pipeline_resolve_pipelineDocumentToList(doc, { lenientCatalog: true }), { lenientNeeds: true });
     merged.schemaVersion = isPipelineV2(doc) ? 2 : 1;
     if (isPipelineV2(doc) && doc.companion_workflows?.length) {
         merged.companion_workflows = [
@@ -46748,9 +46875,9 @@ function flattenStages(stages) {
 // EXTERNAL MODULE: ../../node_modules/.pnpm/ajv@8.20.0/node_modules/ajv/dist/ajv.js
 var ajv = __nccwpck_require__(4687);
 ;// CONCATENATED MODULE: ../core/schema/pipeline-v1.schema.json
-const pipeline_v1_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v1.schema.json","title":"pipeline-compose pipeline v1","type":"object","required":["name","version","stages"],"additionalProperties":false,"properties":{"name":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"version":{"const":1},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"#/$defs/concurrency"},"context":{"type":"object","additionalProperties":{"type":"string"}},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"#/$defs/stage"}}},"$defs":{"concurrency":{"type":"object","additionalProperties":false,"required":["group"],"properties":{"group":{"type":"string","minLength":1},"cancel_in_progress":{"type":"boolean"}}},"stage":{"type":"object","required":["id"],"additionalProperties":false,"properties":{"id":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"repo":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"workflow":{"type":"string","minLength":1},"pipeline_file":{"type":"string","minLength":1},"pipeline":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"when":{"type":"string"},"needs":{"type":"array","items":{"type":"string"}},"environment":{"type":"string"},"inputs":{"type":"object","additionalProperties":{"type":"string"}},"outputs":{"type":"array","items":{"type":"string"}}},"oneOf":[{"required":["workflow"],"not":{"required":["pipeline_file"]}},{"required":["pipeline_file"],"not":{"required":["workflow"]}}]}}}');
+const pipeline_v1_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v1.schema.json","title":"pipeline-compose pipeline v1","type":"object","required":["name","version","stages"],"additionalProperties":false,"properties":{"name":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"version":{"const":1},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"#/$defs/concurrency"},"context":{"type":"object","additionalProperties":{"type":"string"}},"catalog":{"type":"object","additionalProperties":{"$ref":"#/$defs/catalogEntry"}},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"#/$defs/stage"}}},"$defs":{"concurrency":{"type":"object","additionalProperties":false,"required":["group"],"properties":{"group":{"type":"string","minLength":1},"cancel_in_progress":{"type":"boolean"}}},"stage":{"type":"object","required":["id"],"additionalProperties":false,"properties":{"id":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"use":{"type":"string","pattern":"^[a-z][a-z0-9-]*$","description":"Reference a catalog entry for workflow and default fields"},"repo":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"workflow":{"type":"string","minLength":1},"pipeline_file":{"type":"string","minLength":1},"pipeline":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"when":{"type":"string"},"needs":{"type":"array","items":{"type":"string"}},"environment":{"type":"string"},"inputs":{"type":"object","additionalProperties":{"type":"string"}},"outputs":{"type":"array","items":{"type":"string"}}},"oneOf":[{"required":["workflow"],"not":{"anyOf":[{"required":["pipeline_file"]},{"required":["use"]}]}},{"required":["pipeline_file"],"not":{"anyOf":[{"required":["workflow"]},{"required":["use"]}]}},{"required":["use"],"not":{"anyOf":[{"required":["workflow"]},{"required":["pipeline_file"]}]}}]},"catalogEntry":{"type":"object","additionalProperties":false,"properties":{"repo":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"workflow":{"type":"string","minLength":1},"pipeline_file":{"type":"string","minLength":1},"pipeline":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"when":{"type":"string"},"needs":{"type":"array","items":{"type":"string"}},"environment":{"type":"string"},"inputs":{"type":"object","additionalProperties":{"type":"string"}},"outputs":{"type":"array","items":{"type":"string"}}},"oneOf":[{"required":["workflow"],"not":{"required":["pipeline_file"]}},{"required":["pipeline_file"],"not":{"required":["workflow"]}}]}}}');
 ;// CONCATENATED MODULE: ../core/schema/pipeline-v2.schema.json
-const pipeline_v2_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v2.schema.json","title":"pipeline-compose pipeline v2","type":"object","required":["version","pipelines"],"additionalProperties":false,"properties":{"version":{"const":2},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"pipeline-v1.schema.json#/$defs/concurrency"},"smart_rerun":{"type":"boolean","description":"On workflow re-run, reuse outputs from the previous attempt when stage inputs are unchanged"},"pipelines":{"type":"object","minProperties":1,"maxProperties":10,"additionalProperties":{"type":"object","required":["stages"],"additionalProperties":false,"properties":{"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"context_schema":{"type":"object","description":"JSON Schema for stage context outputs (stage id → output keys)"},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"pipeline-v1.schema.json#/$defs/stage"}}}}}}}');
+const pipeline_v2_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v2.schema.json","title":"pipeline-compose pipeline v2","type":"object","required":["version","pipelines"],"additionalProperties":false,"properties":{"version":{"const":2},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"pipeline-v1.schema.json#/$defs/concurrency"},"smart_rerun":{"type":"boolean","description":"On workflow re-run, reuse outputs from the previous attempt when stage inputs are unchanged"},"catalog":{"type":"object","additionalProperties":{"$ref":"pipeline-v1.schema.json#/$defs/catalogEntry"}},"pipelines":{"type":"object","minProperties":1,"maxProperties":10,"additionalProperties":{"type":"object","required":["stages"],"additionalProperties":false,"properties":{"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"context_schema":{"type":"object","description":"JSON Schema for stage context outputs (stage id → output keys)"},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"pipeline-v1.schema.json#/$defs/stage"}}}}}}}');
 ;// CONCATENATED MODULE: ../core/dist/compile/validator.js
 
 
@@ -46811,7 +46938,7 @@ function validatePipelineDocumentsForReport(docs) {
         for (const def of Object.values(doc.pipelines)) {
             validator_assertUniqueStageIds(def.stages);
         }
-        pipelines.push(...pipelineDocumentToList(doc));
+        pipelines.push(...pipelineDocumentToList(doc, { lenientCatalog: true }));
     }
     const merged = mergePipelines(pipelines, { lenientNeeds: true });
     merged.schemaVersion = 2;
@@ -46852,7 +46979,7 @@ function concurrencyFromCodegen(concurrency, fallbackGroup) {
 
 
 const DEFAULT_WORKFLOW_OUTPUT = '.github/workflows/pipeline.yml';
-const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.3.0';
+const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.4.0';
 const DEFAULT_BRANCH = 'master';
 const DEFAULT_TAG_PREFIX = 'v';
 function normalizeWorkflowPath(workflow) {
@@ -47143,14 +47270,14 @@ function collectWorkflowFileDeprecations(repoRoot, relativePath) {
         issues.push({
             level: 'error',
             code: 'uses.monorepo-subpath-deprecated',
-            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.3.0)`,
+            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.4.0)`,
         });
     }
     if (MASTER_PIN.test(content)) {
         issues.push({
             level: 'error',
             code: 'uses.master-pin-deprecated',
-            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.3.0)`,
+            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.4.0)`,
         });
     }
     return issues;
@@ -47423,6 +47550,9 @@ function findOrphanWorkflows(repoRoot, pipeline) {
 }
 function buildValidateReport(pipeline, options = {}) {
     const issues = collectPipelineIssues(pipeline, options);
+    if (options.extraIssues?.length) {
+        issues.push(...options.extraIssues);
+    }
     issues.push(...collectNeedsIssues(pipeline.stages));
     issues.push(...collectContextIssues(pipeline.stages));
     issues.push(...collectContextSchemaIssues(pipeline));
@@ -48127,6 +48257,7 @@ function canReuseStage(previous, fingerprint, declaredOutputs) {
 }
 
 ;// CONCATENATED MODULE: ../core/dist/index.js
+
 
 
 
