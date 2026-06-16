@@ -46531,7 +46531,7 @@ function parser_loadPipeline(opts) {
 
 
 
-function loadPipelineDocumentFromFile(filePath) {
+function pipeline_load_loadPipelineDocumentFromFile(filePath) {
     return parsePipelineDocument(external_node_fs_namespaceObject.readFileSync(filePath, 'utf8'));
 }
 function loadPipelineDocumentsFromDirectory(dirPath) {
@@ -46543,7 +46543,7 @@ function loadPipelineDocumentsFromDirectory(dirPath) {
     if (entries.length === 0) {
         throw new Error(`No pipeline YAML files in ${dirPath}`);
     }
-    return entries.map((name) => loadPipelineDocumentFromFile(external_node_path_namespaceObject.join(dirPath, name)));
+    return entries.map((name) => pipeline_load_loadPipelineDocumentFromFile(external_node_path_namespaceObject.join(dirPath, name)));
 }
 function loadPipelineDocumentsFromInputs(opts) {
     if (opts.pipelineFile && opts.pipelineDir) {
@@ -46553,7 +46553,7 @@ function loadPipelineDocumentsFromInputs(opts) {
         return loadPipelineDocumentsFromDirectory(opts.pipelineDir);
     }
     if (opts.pipelineFile) {
-        return [loadPipelineDocumentFromFile(opts.pipelineFile)];
+        return [pipeline_load_loadPipelineDocumentFromFile(opts.pipelineFile)];
     }
     throw new Error('pipeline_file or pipeline_dir is required');
 }
@@ -46645,9 +46645,9 @@ function pipeline_resolve_pipelineDocumentToList(doc) {
     if (!parser_isPipelineV2(doc)) {
         return [doc];
     }
-    return Object.entries(doc.pipelines).map(([key, def]) => definitionToPipeline(key, def, doc.groups, doc.concurrency));
+    return Object.entries(doc.pipelines).map(([key, def]) => definitionToPipeline(key, def, doc.groups, doc.concurrency, doc.smart_rerun, def.context_schema));
 }
-function definitionToPipeline(key, def, groups, concurrency) {
+function definitionToPipeline(key, def, groups, concurrency, smartRerun, contextSchema) {
     return {
         name: key,
         version: 1,
@@ -46655,6 +46655,8 @@ function definitionToPipeline(key, def, groups, concurrency) {
         needs: def.needs,
         groups,
         concurrency,
+        smart_rerun: smartRerun,
+        context_schema: contextSchema,
         stages: def.stages,
     };
 }
@@ -46683,6 +46685,8 @@ function pipeline_resolve_mergePipelines(pipelines, options = {}) {
         ...new Set(ordered.flatMap((pipeline) => pipeline.companion_workflows ?? [])),
     ];
     const concurrency = ordered.find((p) => p.concurrency)?.concurrency;
+    const smartRerun = ordered.find((p) => p.smart_rerun)?.smart_rerun;
+    const contextSchema = ordered.find((p) => p.context_schema)?.context_schema;
     return {
         name: ordered.length === 1 ? primary.name : 'combined',
         version: 1,
@@ -46690,6 +46694,8 @@ function pipeline_resolve_mergePipelines(pipelines, options = {}) {
         groups: primary.groups,
         context: primary.context,
         concurrency,
+        smart_rerun: smartRerun,
+        context_schema: contextSchema,
         companion_workflows: companion.length > 0 ? companion : undefined,
         stages,
     };
@@ -46702,15 +46708,33 @@ function pipeline_resolve_resolvePipelineDocumentForReport(doc) {
             ...new Set([...(merged.companion_workflows ?? []), ...doc.companion_workflows]),
         ];
     }
+    if (isPipelineV2(doc) && doc.smart_rerun) {
+        merged.smart_rerun = doc.smart_rerun;
+    }
+    const contextSchema = isPipelineV2(doc)
+        ? Object.values(doc.pipelines).find((p) => p.context_schema)?.context_schema
+        : undefined;
+    if (contextSchema) {
+        merged.context_schema = contextSchema;
+    }
     return merged;
 }
-function resolvePipelineDocument(doc) {
+function pipeline_resolve_resolvePipelineDocument(doc) {
     const merged = pipeline_resolve_mergePipelines(pipeline_resolve_pipelineDocumentToList(doc));
     merged.schemaVersion = parser_isPipelineV2(doc) ? 2 : 1;
     if (parser_isPipelineV2(doc) && doc.companion_workflows?.length) {
         merged.companion_workflows = [
             ...new Set([...(merged.companion_workflows ?? []), ...doc.companion_workflows]),
         ];
+    }
+    if (parser_isPipelineV2(doc) && doc.smart_rerun) {
+        merged.smart_rerun = doc.smart_rerun;
+    }
+    const contextSchemaResolved = parser_isPipelineV2(doc)
+        ? Object.values(doc.pipelines).find((p) => p.context_schema)?.context_schema
+        : undefined;
+    if (contextSchemaResolved) {
+        merged.context_schema = contextSchemaResolved;
     }
     return merged;
 }
@@ -46724,9 +46748,9 @@ function flattenStages(stages) {
 // EXTERNAL MODULE: ../../node_modules/.pnpm/ajv@8.20.0/node_modules/ajv/dist/ajv.js
 var ajv = __nccwpck_require__(4687);
 ;// CONCATENATED MODULE: ../core/schema/pipeline-v1.schema.json
-const pipeline_v1_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v1.schema.json","title":"pipeline-compose pipeline v1","type":"object","required":["name","version","stages"],"additionalProperties":false,"properties":{"name":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"version":{"const":1},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"#/$defs/concurrency"},"context":{"type":"object","additionalProperties":{"type":"string"}},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"#/$defs/stage"}}},"$defs":{"concurrency":{"type":"object","additionalProperties":false,"required":["group"],"properties":{"group":{"type":"string","minLength":1},"cancel_in_progress":{"type":"boolean"}}},"stage":{"type":"object","required":["id","workflow"],"additionalProperties":false,"properties":{"id":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"repo":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"workflow":{"type":"string","minLength":1},"when":{"type":"string"},"needs":{"type":"array","items":{"type":"string"}},"environment":{"type":"string"},"inputs":{"type":"object","additionalProperties":{"type":"string"}},"outputs":{"type":"array","items":{"type":"string"}}}}}}');
+const pipeline_v1_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v1.schema.json","title":"pipeline-compose pipeline v1","type":"object","required":["name","version","stages"],"additionalProperties":false,"properties":{"name":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"version":{"const":1},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"#/$defs/concurrency"},"context":{"type":"object","additionalProperties":{"type":"string"}},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"#/$defs/stage"}}},"$defs":{"concurrency":{"type":"object","additionalProperties":false,"required":["group"],"properties":{"group":{"type":"string","minLength":1},"cancel_in_progress":{"type":"boolean"}}},"stage":{"type":"object","required":["id"],"additionalProperties":false,"properties":{"id":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"repo":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"workflow":{"type":"string","minLength":1},"pipeline_file":{"type":"string","minLength":1},"pipeline":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"when":{"type":"string"},"needs":{"type":"array","items":{"type":"string"}},"environment":{"type":"string"},"inputs":{"type":"object","additionalProperties":{"type":"string"}},"outputs":{"type":"array","items":{"type":"string"}}},"oneOf":[{"required":["workflow"],"not":{"required":["pipeline_file"]}},{"required":["pipeline_file"],"not":{"required":["workflow"]}}]}}}');
 ;// CONCATENATED MODULE: ../core/schema/pipeline-v2.schema.json
-const pipeline_v2_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v2.schema.json","title":"pipeline-compose pipeline v2","type":"object","required":["version","pipelines"],"additionalProperties":false,"properties":{"version":{"const":2},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"pipeline-v1.schema.json#/$defs/concurrency"},"pipelines":{"type":"object","minProperties":1,"maxProperties":10,"additionalProperties":{"type":"object","required":["stages"],"additionalProperties":false,"properties":{"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"pipeline-v1.schema.json#/$defs/stage"}}}}}}}');
+const pipeline_v2_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v2.schema.json","title":"pipeline-compose pipeline v2","type":"object","required":["version","pipelines"],"additionalProperties":false,"properties":{"version":{"const":2},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"pipeline-v1.schema.json#/$defs/concurrency"},"smart_rerun":{"type":"boolean","description":"On workflow re-run, reuse outputs from the previous attempt when stage inputs are unchanged"},"pipelines":{"type":"object","minProperties":1,"maxProperties":10,"additionalProperties":{"type":"object","required":["stages"],"additionalProperties":false,"properties":{"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"context_schema":{"type":"object","description":"JSON Schema for stage context outputs (stage id → output keys)"},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"pipeline-v1.schema.json#/$defs/stage"}}}}}}}');
 ;// CONCATENATED MODULE: ../core/dist/compile/validator.js
 
 
@@ -46768,7 +46792,7 @@ function validateV2Document(doc) {
 function validatePipelineDocument(doc) {
     assertV2Document(doc);
     validateV2Document(doc);
-    return resolvePipelineDocument(doc);
+    return pipeline_resolve_resolvePipelineDocument(doc);
 }
 /** Load pipeline for validate/simulate without failing early on unknown needs (reported as issues instead). */
 function validatePipelineDocumentForReport(doc) {
@@ -46828,7 +46852,7 @@ function concurrencyFromCodegen(concurrency, fallbackGroup) {
 
 
 const DEFAULT_WORKFLOW_OUTPUT = '.github/workflows/pipeline.yml';
-const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.0.0';
+const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.3.0';
 const DEFAULT_BRANCH = 'master';
 const DEFAULT_TAG_PREFIX = 'v';
 function normalizeWorkflowPath(workflow) {
@@ -46841,6 +46865,9 @@ function resolveInput(value) {
     return value.replace(/\$\{\{\s*context\.([a-z0-9-]+)\.([a-z0-9_]+)\s*\}\}/gi, (_, stageId, output) => `\${{ needs.${stageId}.outputs.${output} }}`);
 }
 function stageJob(stage) {
+    if (stage.pipeline_file) {
+        throw new Error(`Stage "${stage.id}" uses pipeline_file; compile codegen only supports workflow stages (use pipeline-compose-run)`);
+    }
     const job = {
         uses: normalizeWorkflowPath(stage.workflow),
         secrets: 'inherit',
@@ -46932,7 +46959,170 @@ function generateWorkflow(pipeline, opts = {}) {
     return `${header}${(0,dist/* stringify */.As)(doc)}`;
 }
 
+;// CONCATENATED MODULE: ../core/dist/lib/context-schema.js
+
+
+const context_schema_Ajv = ajv;
+const context_schema_ajv = new context_schema_Ajv({ allErrors: true, strict: false });
+function stageSchema(schema, stageId) {
+    const properties = schema?.properties;
+    const stage = properties?.[stageId];
+    return stage?.type === 'object' ? stage : undefined;
+}
+function outputSchema(stage, outputKey) {
+    const properties = stage?.properties;
+    return properties?.[outputKey];
+}
+function validateContextSchemaDocument(schema) {
+    try {
+        context_schema_ajv.compile(schema);
+        return null;
+    }
+    catch (error) {
+        return error instanceof Error ? error.message : String(error);
+    }
+}
+function context_schema_collectContextSchemaIssues(pipeline) {
+    const schema = pipeline.context_schema;
+    if (!schema) {
+        return [];
+    }
+    const issues = [];
+    const schemaError = validateContextSchemaDocument(schema);
+    if (schemaError) {
+        issues.push({
+            level: 'error',
+            code: 'context-schema.invalid',
+            message: `Invalid context_schema: ${schemaError}`,
+        });
+        return issues;
+    }
+    if (schema.type !== 'object') {
+        issues.push({
+            level: 'error',
+            code: 'context-schema.shape',
+            message: 'context_schema root must be type: object with per-stage properties',
+        });
+        return issues;
+    }
+    for (const stage of pipeline.stages) {
+        for (const outputKey of stage.outputs ?? []) {
+            if (!outputSchema(stageSchema(schema, stage.id), outputKey)) {
+                issues.push({
+                    level: 'error',
+                    code: 'context-schema.unknown-output',
+                    message: `Stage "${stage.id}" declares output "${outputKey}" but context_schema has no properties.${stage.id}.properties.${outputKey}`,
+                });
+            }
+        }
+    }
+    for (const stage of pipeline.stages) {
+        if (!stage.inputs) {
+            continue;
+        }
+        for (const value of Object.values(stage.inputs)) {
+            for (const { stageId, outputKey } of parseContextInputRefs(value)) {
+                if (!outputSchema(stageSchema(schema, stageId), outputKey)) {
+                    issues.push({
+                        level: 'error',
+                        code: 'context-schema.unknown-ref',
+                        message: `Stage "${stage.id}" references context.${stageId}.${outputKey} but context_schema has no properties.${stageId}.properties.${outputKey}`,
+                    });
+                }
+            }
+        }
+    }
+    return issues;
+}
+
+;// CONCATENATED MODULE: ../core/dist/compile/sub-pipeline.js
+
+
+
+
+
+function sub_pipeline_isSubPipelineStage(stage) {
+    return Boolean(stage.pipeline_file);
+}
+function sub_pipeline_resolveSubPipeline(repoRoot, pipelineFile, pipelineKey) {
+    const absolute = path.resolve(repoRoot, pipelineFile);
+    if (!fs.existsSync(absolute)) {
+        throw new Error(`Sub-pipeline file not found: ${pipelineFile}`);
+    }
+    const doc = loadPipelineDocumentFromFile(absolute);
+    if (!isPipelineV2(doc)) {
+        throw new Error(`Sub-pipeline ${pipelineFile} must use pipeline schema v2`);
+    }
+    const keys = Object.keys(doc.pipelines);
+    if (keys.length === 0) {
+        throw new Error(`Sub-pipeline ${pipelineFile} has no pipelines`);
+    }
+    const selected = pipelineKey ?? (keys.length === 1 ? keys[0] : undefined);
+    if (!selected) {
+        throw new Error(`Sub-pipeline ${pipelineFile} defines multiple pipelines; set pipeline: <key> (${keys.join(', ')})`);
+    }
+    if (!doc.pipelines[selected]) {
+        throw new Error(`Sub-pipeline ${pipelineFile} has no pipeline "${selected}"`);
+    }
+    const nested = resolvePipelineDocument({
+        ...doc,
+        pipelines: { [selected]: doc.pipelines[selected] },
+    });
+    for (const stage of nested.stages) {
+        if (sub_pipeline_isSubPipelineStage(stage)) {
+            throw new Error(`Sub-pipeline nesting is limited to one level (stage "${stage.id}" in ${pipelineFile})`);
+        }
+        if (!stage.workflow) {
+            throw new Error(`Sub-pipeline stage "${stage.id}" in ${pipelineFile} must use workflow`);
+        }
+    }
+    return nested;
+}
+function sub_pipeline_nestedDeclaredOutputs(pipeline) {
+    const keys = new Set();
+    for (const stage of pipeline.stages) {
+        for (const output of stage.outputs ?? []) {
+            keys.add(output);
+        }
+    }
+    return keys;
+}
+function collectSubPipelineOutputs(results, declaredOutputs, parentStageId) {
+    if (!declaredOutputs?.length) {
+        return {};
+    }
+    const flat = {};
+    for (const result of results) {
+        if (result.skipped) {
+            continue;
+        }
+        Object.assign(flat, result.outputs);
+    }
+    const outputs = {};
+    for (const key of declaredOutputs) {
+        const value = flat[key];
+        if (value == null) {
+            throw new Error(`Sub-pipeline stage "${parentStageId}" did not produce output "${key}"`);
+        }
+        outputs[key] = value;
+    }
+    return outputs;
+}
+function sub_pipeline_listWorkflowPaths(pipeline, repoRoot) {
+    const paths = [];
+    for (const stage of pipeline.stages) {
+        if (stage.workflow) {
+            paths.push(path.normalize(path.resolve(repoRoot, stage.workflow)));
+        }
+    }
+    return paths;
+}
+function loadPipelineDocumentChecked(filePath) {
+    return loadPipelineDocumentFromFile(filePath);
+}
+
 ;// CONCATENATED MODULE: ../core/dist/compile/deprecations.js
+
 
 
 const MONOREPO_SUBPATH_USES = /uses:\s*['"]?aeswibon\/pipeline-compose\/(run|compile|eval|export|context-merge)/;
@@ -46953,20 +47143,20 @@ function collectWorkflowFileDeprecations(repoRoot, relativePath) {
         issues.push({
             level: 'error',
             code: 'uses.monorepo-subpath-deprecated',
-            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.0.0)`,
+            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.3.0)`,
         });
     }
     if (MASTER_PIN.test(content)) {
         issues.push({
             level: 'error',
             code: 'uses.master-pin-deprecated',
-            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.0.0)`,
+            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.3.0)`,
         });
     }
     return issues;
 }
 function collectStageExportDeprecations(repoRoot, stage) {
-    if (!stage.outputs || stage.outputs.length === 0) {
+    if (!stage.outputs || stage.outputs.length === 0 || isSubPipelineStage(stage) || !stage.workflow) {
         return [];
     }
     const relativePath = stage.workflow;
@@ -47003,10 +47193,11 @@ function deprecations_collectDeprecationIssues(pipeline, repoRoot) {
     const scannedWorkflows = new Set();
     for (const stage of pipeline.stages) {
         issues.push(...collectStageExportDeprecations(repoRoot, stage));
-        if (!scannedWorkflows.has(stage.workflow)) {
-            scannedWorkflows.add(stage.workflow);
-            issues.push(...collectWorkflowFileDeprecations(repoRoot, stage.workflow));
+        if (!stage.workflow || scannedWorkflows.has(stage.workflow)) {
+            continue;
         }
+        scannedWorkflows.add(stage.workflow);
+        issues.push(...collectWorkflowFileDeprecations(repoRoot, stage.workflow));
     }
     for (const companion of pipeline.companion_workflows ?? []) {
         if (scannedWorkflows.has(companion)) {
@@ -47019,6 +47210,8 @@ function deprecations_collectDeprecationIssues(pipeline, repoRoot) {
 }
 
 ;// CONCATENATED MODULE: ../core/dist/compile/validate-report.js
+
+
 
 
 
@@ -47060,14 +47253,42 @@ function collectPipelineIssues(pipeline, options = {}) {
         else {
             ungrouped += 1;
         }
-        if (group && !workflowMatchesGroupConvention(stage.workflow, group, stage.id)) {
+        if (group && stage.workflow && !workflowMatchesGroupConvention(stage.workflow, group, stage.id)) {
             issues.push({
                 level: 'warn',
                 code: 'group.path-prefix',
                 message: `Stage "${stage.id}" group "${group}" does not match workflow path ${stage.workflow} (expected stage id, ${group}-*, stage-*, or name containing "${group}")`,
             });
         }
-        if (repoRoot) {
+        if (isSubPipelineStage(stage)) {
+            if (!repoRoot) {
+                continue;
+            }
+            try {
+                const nested = resolveSubPipeline(repoRoot, stage.pipeline_file, stage.pipeline);
+                const nestedOutputs = nestedDeclaredOutputs(nested);
+                for (const outputKey of stage.outputs ?? []) {
+                    if (!nestedOutputs.has(outputKey)) {
+                        issues.push({
+                            level: 'error',
+                            code: 'subpipeline.unknown-output',
+                            message: `Sub-pipeline stage "${stage.id}" declares output "${outputKey}" but nested pipeline does not produce it`,
+                        });
+                    }
+                }
+            }
+            catch (error) {
+                issues.push({
+                    level: 'error',
+                    code: 'subpipeline.invalid',
+                    message: error instanceof Error
+                        ? error.message
+                        : `Invalid sub-pipeline for stage "${stage.id}"`,
+                });
+            }
+            continue;
+        }
+        if (repoRoot && stage.workflow) {
             const workflowPath = path.resolve(repoRoot, stage.workflow);
             if (!fs.existsSync(workflowPath)) {
                 issues.push({
@@ -47164,10 +47385,26 @@ function findOrphanWorkflows(repoRoot, pipeline) {
     if (!fs.existsSync(workflowsDir)) {
         return [];
     }
-    const referenced = new Set([
-        ...pipeline.stages.map((stage) => path.normalize(path.resolve(root, stage.workflow))),
-        ...(pipeline.companion_workflows ?? []).map((workflow) => path.normalize(path.resolve(root, workflow))),
-    ]);
+    const referenced = new Set();
+    for (const stage of pipeline.stages) {
+        if (stage.workflow) {
+            referenced.add(path.normalize(path.resolve(root, stage.workflow)));
+        }
+        if (isSubPipelineStage(stage) && fs.existsSync(path.resolve(root, stage.pipeline_file))) {
+            try {
+                const nested = resolveSubPipeline(root, stage.pipeline_file, stage.pipeline);
+                for (const workflowPath of listWorkflowPaths(nested, root)) {
+                    referenced.add(workflowPath);
+                }
+            }
+            catch {
+                // resolveSubPipeline issues are reported elsewhere
+            }
+        }
+    }
+    for (const workflow of pipeline.companion_workflows ?? []) {
+        referenced.add(path.normalize(path.resolve(root, workflow)));
+    }
     const entries = fs.readdirSync(workflowsDir, { withFileTypes: true });
     const orphans = [];
     for (const entry of entries) {
@@ -47188,6 +47425,7 @@ function buildValidateReport(pipeline, options = {}) {
     const issues = collectPipelineIssues(pipeline, options);
     issues.push(...collectNeedsIssues(pipeline.stages));
     issues.push(...collectContextIssues(pipeline.stages));
+    issues.push(...collectContextSchemaIssues(pipeline));
     if (options.repoRoot) {
         issues.push(...collectDeprecationIssues(pipeline, options.repoRoot));
     }
@@ -47234,14 +47472,14 @@ function formatPipelineTree(pipeline) {
         lines.push(`  [${group}]${description ? ` — ${description}` : ''}`);
         for (const stage of stages) {
             const pipelineLabel = stage.pipelineKey ? ` (${stage.pipelineKey})` : '';
-            lines.push(`    ${stage.id}${pipelineLabel} → ${stage.workflow}`);
+            lines.push(`    ${stage.id}${pipelineLabel} → ${stage.workflow ?? stage.pipeline_file}`);
         }
     }
     if (ungrouped.length > 0) {
         lines.push('');
         lines.push('  [ungrouped]');
         for (const stage of ungrouped) {
-            lines.push(`    ${stage.id} → ${stage.workflow}`);
+            lines.push(`    ${stage.id} → ${stage.workflow ?? stage.pipeline_file}`);
         }
     }
     return lines.join('\n');
@@ -47272,7 +47510,7 @@ function serializeValidateReport(report, simulation) {
             stageCount: report.pipeline.stages.length,
             stages: report.pipeline.stages.map((stage) => ({
                 id: stage.id,
-                workflow: stage.workflow,
+                workflow: stage.workflow ?? stage.pipeline_file,
                 repo: stage.repo,
                 group: stage.resolvedGroup ?? resolveStageGroup(stage, report.pipeline.group),
                 pipelineKey: stage.pipelineKey,
@@ -47281,6 +47519,135 @@ function serializeValidateReport(report, simulation) {
         ...(simulation ? { simulation } : {}),
         issues: report.issues,
     }, null, 2);
+}
+
+;// CONCATENATED MODULE: ../core/dist/compile/simulate.js
+
+
+
+function hasSkippedDependency(stage, skipped) {
+    return (stage.needs ?? []).some((dep) => skipped.has(dep));
+}
+function missingRequiredContext(stage, context) {
+    if (!stage.inputs) {
+        return null;
+    }
+    for (const value of Object.values(stage.inputs)) {
+        const match = value.match(/\$\{\{\s*context\.([a-z0-9-]+)\.([a-z0-9_]+)\s*\}\}/i);
+        if (!match) {
+            continue;
+        }
+        const [, stageId, outputKey] = match;
+        if (!context[stageId]?.[outputKey]) {
+            return `${stageId}.${outputKey}`;
+        }
+    }
+    return null;
+}
+function simulateStage(stage, wave, skipped, github, context, options) {
+    const base = {
+        id: stage.id,
+        workflow: stage.workflow,
+        pipeline_file: stage.pipeline_file,
+        repo: stage.repo,
+        wave,
+    };
+    if (hasSkippedDependency(stage, skipped)) {
+        skipped.add(stage.id);
+        return {
+            result: { ...base, status: 'blocked', reason: 'upstream stage skipped' },
+            nextContext: context,
+        };
+    }
+    if (stage.when && !evaluateExpression(stage.when, { github, context })) {
+        skipped.add(stage.id);
+        return {
+            result: { ...base, status: 'skip', reason: `when: ${stage.when}` },
+            nextContext: context,
+        };
+    }
+    const missing = missingRequiredContext(stage, context);
+    if (missing) {
+        skipped.add(stage.id);
+        return {
+            result: {
+                ...base,
+                status: 'blocked',
+                reason: `missing context.${missing}`,
+            },
+            nextContext: context,
+        };
+    }
+    let nextContext = context;
+    if (stage.pipeline_file && options.repoRoot) {
+        try {
+            const nested = resolveSubPipeline(options.repoRoot, stage.pipeline_file, stage.pipeline);
+            const nestedResults = simulatePipeline(nested, { github, repoRoot: options.repoRoot });
+            const failed = nestedResults.find((row) => row.status === 'blocked' || row.status === 'skip');
+            if (failed) {
+                skipped.add(stage.id);
+                return {
+                    result: {
+                        ...base,
+                        status: 'blocked',
+                        reason: `sub-pipeline ${failed.id} ${failed.status}`,
+                    },
+                    nextContext: context,
+                };
+            }
+        }
+        catch (error) {
+            skipped.add(stage.id);
+            return {
+                result: {
+                    ...base,
+                    status: 'blocked',
+                    reason: error instanceof Error ? error.message : 'invalid sub-pipeline',
+                },
+                nextContext: context,
+            };
+        }
+    }
+    if (stage.outputs?.length) {
+        nextContext = mergeContext(context, stage.id, Object.fromEntries(stage.outputs.map((key) => [key, ''])));
+    }
+    return {
+        result: { ...base, status: 'run' },
+        nextContext,
+    };
+}
+function simulatePipeline(pipeline, options = {}) {
+    const github = options.github ?? { ref: 'refs/heads/master' };
+    const skipped = new Set();
+    let context = {};
+    const results = [];
+    const waves = groupStagesIntoWaves(pipeline.stages);
+    for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
+        const wave = waves[waveIndex];
+        const waveNum = waveIndex + 1;
+        for (const stage of wave) {
+            const { result, nextContext } = simulateStage(stage, waveNum, skipped, github, context, options);
+            context = nextContext;
+            results.push(result);
+        }
+    }
+    return results;
+}
+function formatSimulateReport(results) {
+    const lines = ['Simulation (no workflows dispatched):', ''];
+    let currentWave = 0;
+    for (const stage of results) {
+        if (stage.wave !== currentWave) {
+            currentWave = stage.wave;
+            lines.push(`  Wave ${currentWave}`);
+        }
+        const target = stage.repo
+            ? `${stage.repo} → ${stage.workflow ?? stage.pipeline_file}`
+            : (stage.workflow ?? stage.pipeline_file ?? stage.id);
+        const suffix = stage.reason ? ` — ${stage.reason}` : '';
+        lines.push(`    ${stage.status.padEnd(7)} ${stage.id} → ${target}${suffix}`);
+    }
+    return lines.join('\n');
 }
 
 ;// CONCATENATED MODULE: ../core/dist/compile/mermaid.js
@@ -47620,14 +47987,18 @@ function buildSyncPlan(pipeline, repoRoot) {
         }
     }
     for (const stage of pipeline.stages) {
-        const target = path.normalize(path.resolve(repoRoot, stage.workflow));
+        const workflow = stage.workflow;
+        if (!workflow) {
+            continue;
+        }
+        const target = path.normalize(path.resolve(repoRoot, workflow));
         if (seenTargets.has(target)) {
             continue;
         }
         const source = defaultSourcePath(repoRoot, stage.resolvedGroup ?? stage.group, stage.id);
         mappings.push({
             from: path.relative(repoRoot, source),
-            to: stage.workflow,
+            to: workflow,
         });
         seenTargets.add(target);
     }
@@ -47716,7 +48087,49 @@ function runWorkflowSync(plan, repoRoot, check = false) {
     return { copied, skipped, missingSources };
 }
 
+// EXTERNAL MODULE: external "node:crypto"
+var external_node_crypto_ = __nccwpck_require__(7598);
+;// CONCATENATED MODULE: ../core/dist/lib/smart-rerun.js
+
+const RERUN_STATE_ARTIFACT = 'pipeline-compose-rerun-state';
+function stageFingerprint(stage, inputs, ref) {
+    const normalizedRef = ref.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '');
+    const payload = JSON.stringify({
+        id: stage.id,
+        workflow: stage.workflow ?? stage.pipeline_file ?? '',
+        repo: stage.repo ?? '',
+        ref: normalizedRef,
+        when: stage.when ?? '',
+        inputs: Object.fromEntries(Object.entries(inputs).sort(([a], [b]) => a.localeCompare(b))),
+    });
+    return createHash('sha256').update(payload).digest('hex').slice(0, 16);
+}
+function parseRerunState(raw) {
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed?.version !== 1 || typeof parsed.stages !== 'object') {
+            return null;
+        }
+        return parsed;
+    }
+    catch {
+        return null;
+    }
+}
+function canReuseStage(previous, fingerprint, declaredOutputs) {
+    if (!previous || previous.fingerprint !== fingerprint) {
+        return false;
+    }
+    if (!declaredOutputs?.length) {
+        return true;
+    }
+    return declaredOutputs.every((key) => previous.outputs[key] != null);
+}
+
 ;// CONCATENATED MODULE: ../core/dist/index.js
+
+
+
 
 
 
