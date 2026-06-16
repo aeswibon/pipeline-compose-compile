@@ -47439,7 +47439,7 @@ function collectPipelineIssues(pipeline, options = {}) {
                     issues.push({
                         level: 'warn',
                         code: 'stage.cross-repo-token',
-                        message: `Stage "${stage.id}" targets ${stage.repo}; add it to repo_tokens_json (or --repo-tokens-file for local validate)`,
+                        message: `Stage "${stage.id}" targets ${stage.repo}; add it to repo_tokens_json (or use github_app_id/github_app_private_key, or --repo-tokens-file for local validate)`,
                     });
                 }
             }
