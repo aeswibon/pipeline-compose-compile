@@ -46508,7 +46508,7 @@ var dist = __nccwpck_require__(3328);
 function parser_isPipelineV2(doc) {
     return doc.version === 2;
 }
-function parsePipelineDocument(yaml) {
+function parser_parsePipelineDocument(yaml) {
     return (0,dist/* parse */.qg)(yaml);
 }
 function parser_resolveStageGroup(stage, pipelineGroup, pipelineKey) {
@@ -46532,7 +46532,7 @@ function parser_loadPipeline(opts) {
 
 
 function pipeline_load_loadPipelineDocumentFromFile(filePath) {
-    return parsePipelineDocument(external_node_fs_namespaceObject.readFileSync(filePath, 'utf8'));
+    return parser_parsePipelineDocument(external_node_fs_namespaceObject.readFileSync(filePath, 'utf8'));
 }
 function loadPipelineDocumentsFromDirectory(dirPath) {
     const entries = external_node_fs_namespaceObject.readdirSync(dirPath, { withFileTypes: true })
@@ -46875,9 +46875,9 @@ function flattenStages(stages) {
 // EXTERNAL MODULE: ../../node_modules/.pnpm/ajv@8.20.0/node_modules/ajv/dist/ajv.js
 var ajv = __nccwpck_require__(4687);
 ;// CONCATENATED MODULE: ../core/schema/pipeline-v1.schema.json
-const pipeline_v1_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v1.schema.json","title":"pipeline-compose pipeline v1","type":"object","required":["name","version","stages"],"additionalProperties":false,"properties":{"name":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"version":{"const":1},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"#/$defs/concurrency"},"context":{"type":"object","additionalProperties":{"type":"string"}},"catalog":{"type":"object","additionalProperties":{"$ref":"#/$defs/catalogEntry"}},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"#/$defs/stage"}}},"$defs":{"concurrency":{"type":"object","additionalProperties":false,"required":["group"],"properties":{"group":{"type":"string","minLength":1},"cancel_in_progress":{"type":"boolean"}}},"stage":{"type":"object","required":["id"],"additionalProperties":false,"properties":{"id":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"use":{"type":"string","pattern":"^[a-z][a-z0-9-]*$","description":"Reference a catalog entry for workflow and default fields"},"repo":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"workflow":{"type":"string","minLength":1},"pipeline_file":{"type":"string","minLength":1},"pipeline":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"when":{"type":"string"},"needs":{"type":"array","items":{"type":"string"}},"environment":{"type":"string"},"inputs":{"type":"object","additionalProperties":{"type":"string"}},"outputs":{"type":"array","items":{"type":"string"}}},"oneOf":[{"required":["workflow"],"not":{"anyOf":[{"required":["pipeline_file"]},{"required":["use"]}]}},{"required":["pipeline_file"],"not":{"anyOf":[{"required":["workflow"]},{"required":["use"]}]}},{"required":["use"],"not":{"anyOf":[{"required":["workflow"]},{"required":["pipeline_file"]}]}}]},"catalogEntry":{"type":"object","additionalProperties":false,"properties":{"repo":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"workflow":{"type":"string","minLength":1},"pipeline_file":{"type":"string","minLength":1},"pipeline":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"when":{"type":"string"},"needs":{"type":"array","items":{"type":"string"}},"environment":{"type":"string"},"inputs":{"type":"object","additionalProperties":{"type":"string"}},"outputs":{"type":"array","items":{"type":"string"}}},"oneOf":[{"required":["workflow"],"not":{"required":["pipeline_file"]}},{"required":["pipeline_file"],"not":{"required":["workflow"]}}]}}}');
+const pipeline_v1_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v1.schema.json","title":"pipeline-compose pipeline v1","type":"object","required":["name","version","stages"],"additionalProperties":false,"properties":{"name":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"version":{"const":1},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"#/$defs/concurrency"},"context":{"type":"object","additionalProperties":{"type":"string"}},"catalog":{"type":"object","additionalProperties":{"$ref":"#/$defs/catalogEntry"}},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"#/$defs/stage"}}},"$defs":{"concurrency":{"type":"object","additionalProperties":false,"required":["group"],"properties":{"group":{"type":"string","minLength":1},"cancel_in_progress":{"type":"boolean"},"global":{"type":"boolean","description":"Coordinate this group across repositories via lock_repo"},"lock_repo":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$","description":"Repository for global lock files (defaults to entry repo)"}}},"stage":{"type":"object","required":["id"],"additionalProperties":false,"properties":{"id":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"use":{"type":"string","pattern":"^[a-z][a-z0-9-]*$","description":"Reference a catalog entry for workflow and default fields"},"repo":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"workflow":{"type":"string","minLength":1},"pipeline_file":{"type":"string","minLength":1},"pipeline":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"when":{"type":"string"},"needs":{"type":"array","items":{"type":"string"}},"environment":{"type":"string"},"inputs":{"type":"object","additionalProperties":{"type":"string"}},"outputs":{"type":"array","items":{"type":"string"}}},"oneOf":[{"required":["workflow"],"not":{"anyOf":[{"required":["pipeline_file"]},{"required":["use"]}]}},{"required":["pipeline_file"],"not":{"anyOf":[{"required":["workflow"]},{"required":["use"]}]}},{"required":["use"],"not":{"anyOf":[{"required":["workflow"]},{"required":["pipeline_file"]}]}}]},"catalogEntry":{"type":"object","additionalProperties":false,"properties":{"repo":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"workflow":{"type":"string","minLength":1},"pipeline_file":{"type":"string","minLength":1},"pipeline":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"when":{"type":"string"},"needs":{"type":"array","items":{"type":"string"}},"environment":{"type":"string"},"inputs":{"type":"object","additionalProperties":{"type":"string"}},"outputs":{"type":"array","items":{"type":"string"}}},"oneOf":[{"required":["workflow"],"not":{"required":["pipeline_file"]}},{"required":["pipeline_file"],"not":{"required":["workflow"]}}]}}}');
 ;// CONCATENATED MODULE: ../core/schema/pipeline-v2.schema.json
-const pipeline_v2_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v2.schema.json","title":"pipeline-compose pipeline v2","type":"object","required":["version","pipelines"],"additionalProperties":false,"properties":{"version":{"const":2},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"pipeline-v1.schema.json#/$defs/concurrency"},"smart_rerun":{"type":"boolean","description":"On workflow re-run, reuse outputs from the previous attempt when stage inputs are unchanged"},"catalog":{"type":"object","additionalProperties":{"$ref":"pipeline-v1.schema.json#/$defs/catalogEntry"}},"pipelines":{"type":"object","minProperties":1,"maxProperties":10,"additionalProperties":{"type":"object","required":["stages"],"additionalProperties":false,"properties":{"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"context_schema":{"type":"object","description":"JSON Schema for stage context outputs (stage id → output keys)"},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"pipeline-v1.schema.json#/$defs/stage"}}}}}}}');
+const pipeline_v2_schema_namespaceObject = /*#__PURE__*/JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#","$id":"https://github.com/aeswibon/pipeline-compose/schema/pipeline-v2.schema.json","title":"pipeline-compose pipeline v2","type":"object","required":["version","pipelines"],"additionalProperties":false,"properties":{"version":{"const":2},"groups":{"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"properties":{"description":{"type":"string"}}}},"companion_workflows":{"type":"array","items":{"type":"string","minLength":1},"maxItems":10},"concurrency":{"$ref":"pipeline-v1.schema.json#/$defs/concurrency"},"smart_rerun":{"type":"boolean","description":"On workflow re-run, reuse outputs from the previous attempt when stage inputs are unchanged"},"catalog":{"type":"object","additionalProperties":{"$ref":"pipeline-v1.schema.json#/$defs/catalogEntry"}},"catalog_from":{"type":"object","additionalProperties":false,"required":["repo","path"],"properties":{"repo":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},"path":{"type":"string","minLength":1},"ref":{"type":"string","minLength":1}}},"pipelines":{"type":"object","minProperties":1,"maxProperties":10,"additionalProperties":{"type":"object","required":["stages"],"additionalProperties":false,"properties":{"group":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"},"needs":{"type":"array","items":{"type":"string","pattern":"^[a-z][a-z0-9-]*$"}},"context_schema":{"type":"object","description":"JSON Schema for stage context outputs (stage id → output keys)"},"stages":{"type":"array","minItems":1,"maxItems":10,"items":{"$ref":"pipeline-v1.schema.json#/$defs/stage"}}}}}}}');
 ;// CONCATENATED MODULE: ../core/dist/compile/validator.js
 
 
@@ -46979,7 +46979,7 @@ function concurrencyFromCodegen(concurrency, fallbackGroup) {
 
 
 const DEFAULT_WORKFLOW_OUTPUT = '.github/workflows/pipeline.yml';
-const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.6.0';
+const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.7.0';
 const DEFAULT_BRANCH = 'master';
 const DEFAULT_TAG_PREFIX = 'v';
 function normalizeWorkflowPath(workflow) {
@@ -47270,14 +47270,14 @@ function collectWorkflowFileDeprecations(repoRoot, relativePath) {
         issues.push({
             level: 'error',
             code: 'uses.monorepo-subpath-deprecated',
-            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.6.0)`,
+            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.7.0)`,
         });
     }
     if (MASTER_PIN.test(content)) {
         issues.push({
             level: 'error',
             code: 'uses.master-pin-deprecated',
-            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.6.0)`,
+            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.7.0)`,
         });
     }
     return issues;
@@ -47337,6 +47337,7 @@ function deprecations_collectDeprecationIssues(pipeline, repoRoot) {
 }
 
 ;// CONCATENATED MODULE: ../core/dist/compile/validate-report.js
+
 
 
 
@@ -47506,6 +47507,66 @@ function collectContextIssues(stages) {
     }
     return issues;
 }
+function collectConcurrencyIssues(concurrency, defaultRepo) {
+    if (!concurrency?.global) {
+        return [];
+    }
+    const issues = [];
+    const lockRepo = concurrency.lock_repo ?? defaultRepo;
+    if (!lockRepo) {
+        issues.push({
+            level: 'error',
+            code: 'concurrency.lock-repo-missing',
+            message: 'Global concurrency requires lock_repo or a default entry repository',
+        });
+        return issues;
+    }
+    try {
+        parseRepoSlug(lockRepo);
+    }
+    catch {
+        issues.push({
+            level: 'error',
+            code: 'concurrency.lock-repo-invalid',
+            message: `Invalid lock_repo slug "${lockRepo}" (expected owner/repo)`,
+        });
+    }
+    issues.push({
+        level: 'warn',
+        code: 'concurrency.global',
+        message: `Global concurrency stores locks in ${lockRepo} (${GLOBAL_LOCK_DIR}/); token needs contents:read and contents:write`,
+    });
+    return issues;
+}
+function collectCatalogFromIssues(doc) {
+    if (!isPipelineV2(doc) || !doc.catalog_from) {
+        return [];
+    }
+    const issues = [];
+    try {
+        parseRepoSlug(doc.catalog_from.repo);
+    }
+    catch {
+        issues.push({
+            level: 'error',
+            code: 'catalog-from.invalid-repo',
+            message: `catalog_from.repo is invalid: "${doc.catalog_from.repo}"`,
+        });
+    }
+    if (!doc.catalog_from.path?.trim()) {
+        issues.push({
+            level: 'error',
+            code: 'catalog-from.invalid-path',
+            message: 'catalog_from.path must be a non-empty repository file path',
+        });
+    }
+    issues.push({
+        level: 'warn',
+        code: 'catalog-from.remote',
+        message: `Pipeline loads catalog from ${doc.catalog_from.repo}:${doc.catalog_from.path} at run time (local catalog overrides remote keys)`,
+    });
+    return issues;
+}
 function findOrphanWorkflows(repoRoot, pipeline) {
     const root = path.resolve(repoRoot);
     const workflowsDir = path.join(root, '.github', 'workflows');
@@ -47556,6 +47617,10 @@ function buildValidateReport(pipeline, options = {}) {
     issues.push(...collectNeedsIssues(pipeline.stages));
     issues.push(...collectContextIssues(pipeline.stages));
     issues.push(...collectContextSchemaIssues(pipeline));
+    issues.push(...collectConcurrencyIssues(pipeline.concurrency, options.defaultRepo));
+    for (const doc of options.documents ?? []) {
+        issues.push(...collectCatalogFromIssues(doc));
+    }
     if (options.repoRoot) {
         issues.push(...collectDeprecationIssues(pipeline, options.repoRoot));
     }
@@ -48217,6 +48282,35 @@ function runWorkflowSync(plan, repoRoot, check = false) {
     return { copied, skipped, missingSources };
 }
 
+;// CONCATENATED MODULE: ../core/dist/compile/catalog-remote.js
+
+function mergeCatalogMaps(remote, local) {
+    if (!remote && !local) {
+        return undefined;
+    }
+    return { ...(remote ?? {}), ...(local ?? {}) };
+}
+function catalogFromFetchedDocument(doc) {
+    if ('catalog' in doc && doc.catalog && typeof doc.catalog === 'object') {
+        return doc.catalog;
+    }
+    return undefined;
+}
+function decodeGitHubFileContent(content, encoding) {
+    if (encoding === 'base64') {
+        return Buffer.from(content, 'base64').toString('utf8');
+    }
+    return content;
+}
+function parseRemoteCatalogYaml(yaml) {
+    const doc = parsePipelineDocument(yaml);
+    const catalog = catalogFromFetchedDocument(doc);
+    if (!catalog || Object.keys(catalog).length === 0) {
+        throw new Error('Remote catalog file has no catalog map');
+    }
+    return catalog;
+}
+
 // EXTERNAL MODULE: external "node:crypto"
 var external_node_crypto_ = __nccwpck_require__(7598);
 ;// CONCATENATED MODULE: ../core/dist/lib/smart-rerun.js
@@ -48257,6 +48351,8 @@ function canReuseStage(previous, fingerprint, declaredOutputs) {
 }
 
 ;// CONCATENATED MODULE: ../core/dist/index.js
+
+
 
 
 
