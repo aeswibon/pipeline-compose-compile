@@ -46737,6 +46737,8 @@ function topo_sort_sortStages(stages) {
 
 function withResolvedStages(pipeline, pipelineKey, lenientNeeds = false) {
     const defaultGroup = pipeline.group ?? pipelineKey;
+    const pipelineRetry = pipeline.retry;
+    const pipelineRetryOn = pipeline.retry_on;
     const ordered = lenientNeeds ? sortStagesLenient(pipeline.stages) : topo_sort_sortStages(pipeline.stages);
     return {
         ...pipeline,
@@ -46744,6 +46746,8 @@ function withResolvedStages(pipeline, pipelineKey, lenientNeeds = false) {
             ...stage,
             resolvedGroup: parser_resolveStageGroup(stage, defaultGroup, pipelineKey),
             pipelineKey,
+            retry: stage.retry ?? pipelineRetry,
+            retry_on: stage.retry_on ?? pipelineRetryOn,
         })),
     };
 }
@@ -48095,7 +48099,7 @@ function stageNodeLabel(stage, pipeline) {
     }
     return parts.join(' ');
 }
-function renderPipelineMermaid(pipeline, options = {}) {
+function mermaid_renderPipelineMermaid(pipeline, options = {}) {
     const issues = options.issues ?? [];
     const errorsByStage = errorStageIds(issues);
     const blockedByStage = blockedStageIds(pipeline, errorsByStage);
@@ -48733,23 +48737,13 @@ function checkWhen(stage, context) {
         context: context,
     });
 }
-function runActStage(stage, context, opts) {
+function runActStageOnce(stage, context, opts) {
     const startTime = Date.now();
     const repoDir = resolveRepoDir(stage, opts);
     const workflowPath = stage.workflow ?? stage.pipeline_file;
     const workflowFile = workflowPath ? path.join(repoDir, workflowPath) : null;
     if (!workflowFile || !fs.existsSync(workflowFile)) {
-        return {
-            id: stage.id,
-            workflow: workflowPath ?? 'unknown',
-            repo: stage.repo,
-            status: 'failure',
-            outputs: {},
-            durationMs: Date.now() - startTime,
-        };
-    }
-    if (!checkWhen(stage, context)) {
-        return { id: stage.id, workflow: workflowPath ?? '', repo: stage.repo, status: 'skipped', outputs: {}, durationMs: 0 };
+        return { status: 'failure', outputs: {}, durationMs: Date.now() - startTime };
     }
     const resolvedInputs = local_resolveStageInputs(stage.inputs, context);
     const eventJson = JSON.stringify({ inputs: resolvedInputs });
@@ -48773,21 +48767,14 @@ function runActStage(stage, context, opts) {
     if (proc.status !== 0) {
         const stderr = proc.stderr?.toString().trim() ?? '';
         console.error(`  act failed for stage "${stage.id}": ${stderr || 'exit code ' + proc.status}`);
-        return { id: stage.id, workflow: workflowPath ?? '', repo: stage.repo, status: 'failure', outputs: {}, durationMs };
+        return { status: 'failure', outputs: {}, durationMs };
     }
     const outputs = readArtifactOutput(opts.artifactDir, stage.id) ?? {};
-    return { id: stage.id, workflow: workflowPath ?? '', repo: stage.repo, status: 'success', outputs, durationMs };
+    return { status: 'success', outputs, durationMs };
 }
-function resolveContextRefs(cmd, context) {
-    return cmd.replace(/\$\{\{\s*context\.([a-z0-9-]+)\.([a-z0-9_]+)\s*\}\}/gi, (_, stageId, key) => context[stageId]?.[key] ?? '');
-}
-function runShellStage(stage, context, opts) {
+function runShellStageOnce(stage, context, opts) {
     const startTime = Date.now();
-    const runCmd = stage.run;
-    if (!checkWhen(stage, context)) {
-        return { id: stage.id, workflow: runCmd, repo: stage.repo, status: 'skipped', outputs: {}, durationMs: 0 };
-    }
-    const resolvedCmd = resolveContextRefs(runCmd, context);
+    const resolvedCmd = resolveContextRefs(stage.run, context);
     const outputsPath = path.join(opts.artifactDir, `${stage.id}-outputs.json`);
     fs.mkdirSync(opts.artifactDir, { recursive: true });
     const proc = spawnSync('/bin/sh', ['-c', resolvedCmd], {
@@ -48813,13 +48800,37 @@ function runShellStage(stage, context, opts) {
         fs.rmSync(outputsPath, { force: true });
     }
     return {
-        id: stage.id,
-        workflow: runCmd,
-        repo: stage.repo,
         status: proc.status === 0 ? 'success' : 'failure',
         outputs,
         durationMs,
     };
+}
+function runStageWithRetry(stageId, workflowLabel, repo, skipCheck, onceFn, retry = 3, retryOn = 'failure') {
+    if (skipCheck()) {
+        return { id: stageId, workflow: workflowLabel, repo, status: 'skipped', outputs: {}, durationMs: 0, attempts: 0 };
+    }
+    const maxAttempts = Math.max(1, (retry ?? 3) + 1);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (attempt > 1) {
+            console.log(`  Retrying stage "${stageId}" (attempt ${attempt}/${maxAttempts})...`);
+        }
+        const { status, outputs, durationMs } = onceFn();
+        if (status === 'success' && retryOn === 'failure') {
+            return { id: stageId, workflow: workflowLabel, repo, status, outputs, durationMs, attempts: attempt };
+        }
+        if (status === 'success' && retryOn === 'always' && attempt >= maxAttempts) {
+            return { id: stageId, workflow: workflowLabel, repo, status, outputs, durationMs, attempts: attempt };
+        }
+        if (status === 'failure' && attempt >= maxAttempts) {
+            return { id: stageId, workflow: workflowLabel, repo, status, outputs, durationMs, attempts: attempt };
+        }
+        // continue to next retry
+    }
+    // ponytail: retry_on=failed (selective job retry) requires GitHub API job-level rerun; not implemented yet
+    return { id: stageId, workflow: workflowLabel, repo, status: 'failure', outputs: {}, durationMs: 0, attempts: maxAttempts };
+}
+function resolveContextRefs(cmd, context) {
+    return cmd.replace(/\$\{\{\s*context\.([a-z0-9-]+)\.([a-z0-9_]+)\s*\}\}/gi, (_, stageId, key) => context[stageId]?.[key] ?? '');
 }
 function formatLocalRunResult(result) {
     const lines = [];
@@ -48835,7 +48846,8 @@ function formatLocalRunResult(result) {
         lines.push(`       action: ${stage.workflow}`);
         if (stage.repo)
             lines.push(`       repo: ${stage.repo}`);
-        lines.push(`       status: ${stage.status}`);
+        const retries = stage.attempts != null && stage.attempts > 0 ? ` (${stage.attempts} attempt${stage.attempts > 1 ? 's' : ''})` : '';
+        lines.push(`       status: ${stage.status}${retries}`);
         lines.push(`       duration: ${formatDuration(stage.durationMs)}`);
         const keys = Object.keys(stage.outputs);
         if (keys.length > 0) {
@@ -48875,9 +48887,9 @@ function runPipelineLocal(pipeline, repoRoot, workspace, actBinary, artifactDir,
     let success = true;
     for (const wave of waves) {
         for (const stage of wave) {
-            const result = stage.run
-                ? runShellStage(stage, context, opts)
-                : runActStage(stage, context, opts);
+            const result = runStageWithRetry(stage.id, stage.run ?? stage.workflow ?? stage.pipeline_file ?? stage.id, stage.repo, () => !checkWhen(stage, context), stage.run
+                ? () => runShellStageOnce(stage, context, opts)
+                : () => runActStageOnce(stage, context, opts), stage.retry, stage.retry_on);
             results.push(result);
             if (result.status === 'success' && Object.keys(result.outputs).length > 0) {
                 context = mergeContext(context, stage.id, result.outputs);
@@ -48978,7 +48990,121 @@ function stageFingerprintFromState(stage) {
     return stage.fingerprint;
 }
 
+;// CONCATENATED MODULE: ../core/dist/compile/visualize.js
+
+const STATUS_COLORS = {
+    success: { fill: '#dafbe1', stroke: '#2da44e', label: 'success' },
+    failure: { fill: '#ffebe9', stroke: '#cf222e', label: 'failure' },
+    skipped: { fill: '#f6f8fa', stroke: '#8b949e', label: 'skipped' },
+    running: { fill: '#ddf4ff', stroke: '#0969da', label: 'running' },
+};
+function nodeId(id) {
+    return id.replace(/[^a-zA-Z0-9_]/g, '_');
+}
+function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function renderPipelineHtml(pipeline, options) {
+    const state = options?.state ?? {};
+    const mermaidDef = renderPipelineMermaid(pipeline);
+    const lines = mermaidDef.split('\n');
+    const definedStates = new Set(Object.keys(state));
+    const hasStates = definedStates.size > 0;
+    if (hasStates) {
+        const classDefs = [];
+        const assignments = [];
+        for (const [status, colors] of Object.entries(STATUS_COLORS)) {
+            classDefs.push(`  classDef ${status} fill:${colors.fill},stroke:${colors.stroke},stroke-width:2px`);
+        }
+        for (const stage of pipeline.stages) {
+            const s = state[stage.id];
+            if (s && STATUS_COLORS[s.status]) {
+                assignments.push(`  class ${nodeId(stage.id)} ${s.status}`);
+            }
+        }
+        if (classDefs.length > 0) {
+            lines.push('');
+            lines.push(...classDefs);
+        }
+        if (assignments.length > 0) {
+            lines.push('');
+            lines.push(...assignments);
+        }
+    }
+    const mermaidSrc = escapeHtml(lines.join('\n'));
+    const successCount = pipeline.stages.filter((s) => state[s.id]?.status === 'success').length;
+    const failCount = pipeline.stages.filter((s) => state[s.id]?.status === 'failure').length;
+    const skipCount = pipeline.stages.filter((s) => state[s.id]?.status === 'skipped').length;
+    const runCount = pipeline.stages.filter((s) => state[s.id]?.status === 'running').length;
+    const pendingCount = pipeline.stages.length - successCount - failCount - skipCount - runCount;
+    const summaryParts = [`${pipeline.stages.length} stages`];
+    if (successCount)
+        summaryParts.push(`${successCount} success`);
+    if (failCount)
+        summaryParts.push(`${failCount} failed`);
+    if (skipCount)
+        summaryParts.push(`${skipCount} skipped`);
+    if (runCount)
+        summaryParts.push(`${runCount} running`);
+    if (pendingCount)
+        summaryParts.push(`${pendingCount} pending`);
+    const summary = summaryParts.join(' · ');
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pipeline: ${escapeHtml(pipeline.name)}</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+         background: #f6f8fa; color: #1f2328; padding: 24px; }
+  h1 { font-size: 20px; font-weight: 600; }
+  .subtitle { color: #656d76; font-size: 14px; margin-bottom: 16px; }
+  .mermaid { display: flex; justify-content: center; }
+  .mermaid svg { max-width: 100%; height: auto; }
+  .legend { display: flex; gap: 16px; justify-content: center; margin-top: 24px;
+            font-size: 12px; color: #656d76; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+</style>
+</head>
+<body>
+<h1>${escapeHtml(pipeline.name)}</h1>
+<div class="subtitle">${summary}</div>
+<pre class="mermaid">
+${mermaidSrc}
+</pre>
+<div class="legend">
+  <span class="legend-item"><span class="legend-dot" style="background:#2da44e"></span> success</span>
+  <span class="legend-item"><span class="legend-dot" style="background:#cf222e"></span> failure</span>
+  <span class="legend-item"><span class="legend-dot" style="background:#8b949e"></span> skipped</span>
+  <span class="legend-item"><span class="legend-dot" style="background:#0969da"></span> running</span>
+  <span class="legend-item"><span class="legend-dot" style="background:#d0d7de"></span> pending</span>
+</div>
+</body>
+</html>`;
+}
+function buildVisualizeState(pipeline, stateRecords, runId) {
+    const result = {};
+    if (!stateRecords?.length)
+        return result;
+    const target = runId
+        ? stateRecords.find((r) => r.runId === runId)
+        : stateRecords[0];
+    if (!target)
+        return result;
+    for (const s of target.stages) {
+        if (s.status === 'success' || s.status === 'failure' || s.status === 'skipped') {
+            result[s.id] = { status: s.status, durationMs: s.durationMs };
+        }
+    }
+    return result;
+}
+
 ;// CONCATENATED MODULE: ../core/dist/index.js
+
 
 
 
