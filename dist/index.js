@@ -46979,7 +46979,7 @@ function concurrencyFromCodegen(concurrency, fallbackGroup) {
 
 
 const DEFAULT_WORKFLOW_OUTPUT = '.github/workflows/pipeline.yml';
-const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.9.0';
+const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.10.0';
 const DEFAULT_BRANCH = 'master';
 const DEFAULT_TAG_PREFIX = 'v';
 function normalizeWorkflowPath(workflow) {
@@ -47161,6 +47161,22 @@ function context_schema_collectContextSchemaIssues(pipeline) {
     }
     return issues;
 }
+/** Runtime check: stage outputs match context_schema slice for stageId (optional export action). */
+function validateStageOutputsAgainstSchema(stageId, outputs, schema) {
+    const schemaError = validateContextSchemaDocument(schema);
+    if (schemaError) {
+        return `Invalid context_schema: ${schemaError}`;
+    }
+    const stage = stageSchema(schema, stageId);
+    if (!stage) {
+        return `context_schema has no properties.${stageId}`;
+    }
+    const validate = context_schema_ajv.compile(stage);
+    if (!validate(outputs)) {
+        return context_schema_ajv.errorsText(validate.errors);
+    }
+    return null;
+}
 
 ;// CONCATENATED MODULE: ../core/dist/compile/sub-pipeline.js
 
@@ -47270,14 +47286,14 @@ function collectWorkflowFileDeprecations(repoRoot, relativePath) {
         issues.push({
             level: 'error',
             code: 'uses.monorepo-subpath-deprecated',
-            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.9.0)`,
+            message: `Workflow ${relativePath} uses legacy aeswibon/pipeline-compose/<action> paths; use separate action repos (e.g. aeswibon/pipeline-compose-run@v1.10.0)`,
         });
     }
     if (MASTER_PIN.test(content)) {
         issues.push({
             level: 'error',
             code: 'uses.master-pin-deprecated',
-            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.9.0)`,
+            message: `Workflow ${relativePath} pins actions at @master; use a semver tag (e.g. @v1.10.0)`,
         });
     }
     return issues;
@@ -47635,7 +47651,8 @@ function buildValidateReport(pipeline, options = {}) {
     }
     if (options.strict) {
         for (const issue of issues) {
-            if (issue.level === 'warn') {
+            // ponytail: informational global-lock reminder; not a graph defect
+            if (issue.level === 'warn' && issue.code !== 'concurrency.global') {
                 issue.level = 'error';
             }
         }
@@ -48351,7 +48368,21 @@ function canReuseStage(previous, fingerprint, declaredOutputs) {
     return declaredOutputs.every((key) => previous.outputs[key] != null);
 }
 
+;// CONCATENATED MODULE: ../core/dist/import/render-import.js
+
+function renderImportedPipelineYaml(pipelineName, stages) {
+    const doc = {
+        version: 2,
+        pipelines: {
+            [pipelineName]: { stages },
+        },
+    };
+    return YAML.stringify(doc).trimEnd() + '\n';
+}
+
 ;// CONCATENATED MODULE: ../core/dist/index.js
+
+
 
 
 
