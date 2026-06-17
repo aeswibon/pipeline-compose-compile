@@ -48021,13 +48021,12 @@ function renderPipelineMermaid(pipeline, options = {}) {
 
 
 const LOCAL_WORKFLOW_REF = /(?:uses:\s*|\.\/)?\.github\/workflows\/([A-Za-z0-9_.-]+)\.(ya?ml)/gi;
+const EXPORT_USES_RE = /uses:\s*[^\n]*(?:pipeline-compose-export|\/action-export|packages\/action-export)/gi;
+const REPOSITORY_DISPATCH_ACTION_RE = /(?:peter-evans\/repository-dispatch|actions\/github-script|gh\s+api[^\n]*dispatches)/i;
 function workflowStem(fileName) {
     return fileName.replace(/\.(ya?ml)$/i, '');
 }
-function workflow_init_normalizeWorkflowPath(repoRoot, relativePath) {
-    return path.normalize(path.join(repoRoot, relativePath)).replace(/\\/g, '/');
-}
-function hasDispatchTrigger(onBlock) {
+function hasOrchestratableTrigger(onBlock) {
     if (onBlock == null) {
         return false;
     }
@@ -48040,6 +48039,21 @@ function hasDispatchTrigger(onBlock) {
     if (typeof onBlock === 'object') {
         const keys = Object.keys(onBlock);
         return keys.includes('workflow_dispatch') || keys.includes('workflow_call');
+    }
+    return false;
+}
+function hasRepositoryDispatchTrigger(onBlock) {
+    if (onBlock == null) {
+        return false;
+    }
+    if (typeof onBlock === 'string') {
+        return onBlock === 'repository_dispatch';
+    }
+    if (Array.isArray(onBlock)) {
+        return onBlock.some((entry) => entry === 'repository_dispatch');
+    }
+    if (typeof onBlock === 'object') {
+        return Object.keys(onBlock).includes('repository_dispatch');
     }
     return false;
 }
@@ -48065,10 +48079,100 @@ function findReferencedWorkflowStems(content) {
     }
     return stems;
 }
-function scanWorkflowsForInit(repoRoot) {
+function parseOutputsKeys(outputsRaw) {
+    const trimmed = outputsRaw.trim();
+    try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return Object.keys(parsed).sort();
+        }
+    }
+    catch {
+        // ponytail: fall back to key scan for templated JSON
+    }
+    const keys = [...trimmed.matchAll(/"([a-zA-Z0-9_-]+)"\s*:/g)].map((match) => match[1]);
+    return [...new Set(keys)].sort();
+}
+/** Find pipeline-compose-export steps and declared output keys in workflow YAML text. */
+function findPipelineComposeExports(content) {
+    const exports = [];
+    for (const match of content.matchAll(EXPORT_USES_RE)) {
+        const start = match.index ?? 0;
+        const block = content.slice(start, start + 1200);
+        const stageIdMatch = block.match(/stage_id:\s*['"]?([A-Za-z0-9_.-]+)/);
+        if (!stageIdMatch) {
+            continue;
+        }
+        const outputsMatch = block.match(/outputs:\s*(?:>-|>\|-)?\s*['"]?(\{[\s\S]*?\})['"]?/);
+        const outputKeys = outputsMatch ? parseOutputsKeys(outputsMatch[1]) : [];
+        exports.push({ stageId: stageIdMatch[1], outputKeys });
+    }
+    return exports;
+}
+function buildContextSchemaStub(stages) {
+    const withOutputs = stages.filter((stage) => stage.outputs?.length);
+    if (withOutputs.length === 0) {
+        return undefined;
+    }
+    const properties = {};
+    for (const stage of withOutputs) {
+        const outputProps = {};
+        for (const key of stage.outputs ?? []) {
+            outputProps[key] = { type: 'string' };
+        }
+        properties[stage.id] = {
+            type: 'object',
+            properties: outputProps,
+        };
+    }
+    return { type: 'object', properties };
+}
+function scanRepositoryDispatchHints(repoRoot) {
     const workflowsDir = path.join(repoRoot, '.github', 'workflows');
     if (!fs.existsSync(workflowsDir)) {
-        return { candidates: [], stages: [], skipped: [] };
+        return [];
+    }
+    const hints = [];
+    for (const entry of fs.readdirSync(workflowsDir)) {
+        if (!entry.endsWith('.yml') && !entry.endsWith('.yaml')) {
+            continue;
+        }
+        const relativePath = path.join('.github', 'workflows', entry).replace(/\\/g, '/');
+        const content = fs.readFileSync(path.join(workflowsDir, entry), 'utf8');
+        if (!REPOSITORY_DISPATCH_ACTION_RE.test(content)) {
+            continue;
+        }
+        hints.push(`${relativePath}: uses repository_dispatch — consider replacing with a pipeline-compose stage (repo: + workflow_dispatch target)`);
+    }
+    return hints;
+}
+function enrichStagesWithExports(stages, contentByStem) {
+    const outputsByStageId = new Map();
+    for (const content of contentByStem.values()) {
+        for (const found of findPipelineComposeExports(content)) {
+            const keys = outputsByStageId.get(found.stageId) ?? new Set();
+            for (const key of found.outputKeys) {
+                keys.add(key);
+            }
+            outputsByStageId.set(found.stageId, keys);
+        }
+    }
+    return stages.map((stage) => {
+        const keys = outputsByStageId.get(stage.id);
+        if (!keys?.size) {
+            return stage;
+        }
+        return {
+            ...stage,
+            outputs: [...keys].sort(),
+        };
+    });
+}
+function scanWorkflowsForInit(repoRoot) {
+    const workflowsDir = path.join(repoRoot, '.github', 'workflows');
+    const dispatchHints = scanRepositoryDispatchHints(repoRoot);
+    if (!fs.existsSync(workflowsDir)) {
+        return { candidates: [], stages: [], skipped: [], dispatchHints };
     }
     const entries = fs
         .readdirSync(workflowsDir)
@@ -48092,8 +48196,13 @@ function scanWorkflowsForInit(repoRoot) {
             continue;
         }
         const onBlock = doc?.on;
-        if (!hasDispatchTrigger(onBlock)) {
-            skipped.push(`${relativePath} (no workflow_dispatch/workflow_call)`);
+        if (!hasOrchestratableTrigger(onBlock)) {
+            if (hasRepositoryDispatchTrigger(onBlock)) {
+                skipped.push(`${relativePath} (repository_dispatch only — add workflow_dispatch for pipeline-compose stages)`);
+            }
+            else {
+                skipped.push(`${relativePath} (no workflow_dispatch/workflow_call)`);
+            }
             continue;
         }
         pathByStem.set(stem, relativePath);
@@ -48119,7 +48228,7 @@ function scanWorkflowsForInit(repoRoot) {
         }
         needsByStem.set(stem, needs);
     }
-    const stages = candidates.map((candidate) => {
+    let stages = candidates.map((candidate) => {
         const stem = workflowStem(path.basename(candidate.workflowPath));
         const needs = [...(needsByStem.get(stem) ?? [])].sort();
         return {
@@ -48128,20 +48237,43 @@ function scanWorkflowsForInit(repoRoot) {
             ...(needs.length > 0 ? { needs } : {}),
         };
     });
+    stages = enrichStagesWithExports(stages, contentByStem);
+    stages = sortStages(stages);
     return {
         candidates,
-        stages: sortStages(stages),
+        stages,
         skipped,
+        dispatchHints,
     };
 }
-function renderInitPipelineYaml(stages, pipelineName = 'pipeline') {
+function renderYamlMapping(indent, value) {
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+        return [`${indent}${JSON.stringify(value)}`];
+    }
+    const lines = [];
+    for (const [key, nested] of Object.entries(value)) {
+        if (nested != null && typeof nested === 'object' && !Array.isArray(nested)) {
+            lines.push(`${indent}${key}:`);
+            lines.push(...renderYamlMapping(`${indent}  `, nested));
+        }
+        else {
+            lines.push(`${indent}${key}: ${JSON.stringify(nested)}`);
+        }
+    }
+    return lines;
+}
+function renderInitPipelineYaml(stages, pipelineName = 'pipeline', contextSchema) {
     const lines = [
-        `# Generated by pipeline-compose init — review needs, outputs, and inputs before use`,
+        `# Generated by pipeline-compose init — review needs, outputs, inputs, and context_schema before use`,
         'version: 2',
         'pipelines:',
         `  ${pipelineName}:`,
-        '    stages:',
     ];
+    if (contextSchema) {
+        lines.push('    context_schema:');
+        lines.push(...renderYamlMapping('      ', contextSchema));
+    }
+    lines.push('    stages:');
     for (const stage of stages) {
         lines.push(`      - id: ${stage.id}`);
         lines.push(`        workflow: ${stage.workflow}`);
@@ -48149,6 +48281,12 @@ function renderInitPipelineYaml(stages, pipelineName = 'pipeline') {
             lines.push('        needs:');
             for (const dep of stage.needs) {
                 lines.push(`          - ${dep}`);
+            }
+        }
+        if (stage.outputs && stage.outputs.length > 0) {
+            lines.push('        outputs:');
+            for (const key of stage.outputs) {
+                lines.push(`          - ${key}`);
             }
         }
     }
@@ -48164,8 +48302,9 @@ function writeInitPipeline(repoRoot, options = {}) {
     if (fs.existsSync(outputPath) && !options.force) {
         throw new Error(`Refusing to overwrite existing file: ${outputPath} (use --force)`);
     }
+    const contextSchema = buildContextSchemaStub(result.stages);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-    fs.writeFileSync(outputPath, renderInitPipelineYaml(result.stages, options.pipelineName), 'utf8');
+    fs.writeFileSync(outputPath, renderInitPipelineYaml(result.stages, options.pipelineName, contextSchema), 'utf8');
     return { outputPath, result };
 }
 
