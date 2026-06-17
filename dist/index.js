@@ -48467,6 +48467,65 @@ function parseRemoteCatalogYaml(yaml) {
     return catalog;
 }
 
+;// CONCATENATED MODULE: ../core/dist/lib/repo-access-check.js
+
+
+function collectCrossRepoSlugs(pipeline, repoRoot) {
+    const slugs = new Set();
+    function walk(stages) {
+        for (const stage of stages) {
+            if (stage.repo) {
+                try {
+                    parseRepoSlug(stage.repo);
+                    slugs.add(stage.repo);
+                }
+                catch {
+                    // invalid slug reported elsewhere
+                }
+            }
+            if (isSubPipelineStage(stage) && repoRoot) {
+                try {
+                    const nested = resolveSubPipeline(repoRoot, stage.pipeline_file, stage.pipeline);
+                    walk(nested.stages);
+                }
+                catch {
+                    // sub-pipeline errors reported elsewhere
+                }
+            }
+        }
+    }
+    walk(pipeline.stages);
+    return [...slugs].sort();
+}
+async function collectRepoAccessIssues(slugs, token) {
+    const issues = [];
+    for (const slug of slugs) {
+        const response = await fetch(`https://api.github.com/repos/${slug}`, {
+            headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+                'User-Agent': 'pipeline-compose-validate',
+            },
+        });
+        if (response.status === 404) {
+            issues.push({
+                level: 'error',
+                code: 'repo.access-denied',
+                message: `Cannot access repository ${slug} with provided token (404)`,
+            });
+        }
+        else if (!response.ok) {
+            issues.push({
+                level: 'error',
+                code: 'repo.access-check-failed',
+                message: `GitHub API ${response.status} checking repository ${slug}`,
+            });
+        }
+    }
+    return issues;
+}
+
 // EXTERNAL MODULE: external "node:crypto"
 var external_node_crypto_ = __nccwpck_require__(7598);
 ;// CONCATENATED MODULE: ../core/dist/lib/smart-rerun.js
@@ -48520,6 +48579,7 @@ function renderImportedPipelineYaml(pipelineName, stages) {
 }
 
 ;// CONCATENATED MODULE: ../core/dist/index.js
+
 
 
 
