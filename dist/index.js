@@ -47734,10 +47734,85 @@ function serializeValidateReport(report, simulation, options) {
     }, null, 2);
 }
 
+// EXTERNAL MODULE: external "node:crypto"
+var external_node_crypto_ = __nccwpck_require__(7598);
+;// CONCATENATED MODULE: ../core/dist/lib/smart-rerun.js
+
+const RERUN_STATE_ARTIFACT = 'pipeline-compose-rerun-state';
+function smart_rerun_stageFingerprint(stage, inputs, ref, workflowDigest) {
+    const normalizedRef = ref.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '');
+    const payload = JSON.stringify({
+        id: stage.id,
+        workflow: stage.workflow ?? stage.pipeline_file ?? '',
+        repo: stage.repo ?? '',
+        ref: normalizedRef,
+        when: stage.when ?? '',
+        workflow_digest: workflowDigest ?? '',
+        inputs: Object.fromEntries(Object.entries(inputs).sort(([a], [b]) => a.localeCompare(b))),
+    });
+    return createHash('sha256').update(payload).digest('hex').slice(0, 16);
+}
+function parseRerunState(raw) {
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed?.version !== 1 || typeof parsed.stages !== 'object') {
+            return null;
+        }
+        return parsed;
+    }
+    catch {
+        return null;
+    }
+}
+function smart_rerun_canReuseStage(previous, fingerprint, declaredOutputs) {
+    if (!previous || previous.fingerprint !== fingerprint) {
+        return false;
+    }
+    if (!declaredOutputs?.length) {
+        return true;
+    }
+    return declaredOutputs.every((key) => previous.outputs[key] != null);
+}
+
 ;// CONCATENATED MODULE: ../core/dist/compile/simulate.js
 
 
 
+
+
+
+
+function resolveStageInputs(inputs, context) {
+    if (!inputs) {
+        return {};
+    }
+    return Object.fromEntries(Object.entries(inputs).map(([key, value]) => [
+        key,
+        value.replace(/\$\{\{\s*context\.([a-z0-9-]+)\.([a-z0-9_]+)\s*\}\}/gi, (_, stageId, outputKey) => context[stageId]?.[outputKey] ?? ''),
+    ]));
+}
+// ponytail: same-repo file digest only; cross-repo Contents API omitted in simulate
+function workflowDigestForSimulate(stage, repoRoot) {
+    if (!repoRoot) {
+        return undefined;
+    }
+    const contentPath = stage.workflow ?? stage.pipeline_file;
+    if (!contentPath) {
+        return undefined;
+    }
+    try {
+        const content = fs.readFileSync(path.join(repoRoot, contentPath), 'utf8');
+        return createHash('sha256').update(content).digest('hex').slice(0, 16);
+    }
+    catch {
+        return undefined;
+    }
+}
+function smartRerunEnabled(pipeline, options) {
+    return Boolean(pipeline.smart_rerun &&
+        options.smartRerun &&
+        (options.smartRerun.runAttempt ?? 2) > 1);
+}
 function hasSkippedDependency(stage, skipped) {
     return (stage.needs ?? []).some((dep) => skipped.has(dep));
 }
@@ -47757,7 +47832,7 @@ function missingRequiredContext(stage, context) {
     }
     return null;
 }
-function simulateStage(stage, wave, skipped, github, context, options) {
+function simulateStage(pipeline, stage, wave, skipped, github, context, options) {
     const base = {
         id: stage.id,
         workflow: stage.workflow,
@@ -47765,17 +47840,20 @@ function simulateStage(stage, wave, skipped, github, context, options) {
         repo: stage.repo,
         wave,
     };
+    const annotateRerun = (result) => smartRerunEnabled(pipeline, options)
+        ? { ...result, rerun: result.status === 'run' ? result.rerun : 'n/a' }
+        : result;
     if (hasSkippedDependency(stage, skipped)) {
         skipped.add(stage.id);
         return {
-            result: { ...base, status: 'blocked', reason: 'upstream stage skipped' },
+            result: annotateRerun({ ...base, status: 'blocked', reason: 'upstream stage skipped' }),
             nextContext: context,
         };
     }
     if (stage.when && !evaluateExpression(stage.when, { github, context })) {
         skipped.add(stage.id);
         return {
-            result: { ...base, status: 'skip', reason: `when: ${stage.when}` },
+            result: annotateRerun({ ...base, status: 'skip', reason: `when: ${stage.when}` }),
             nextContext: context,
         };
     }
@@ -47783,15 +47861,14 @@ function simulateStage(stage, wave, skipped, github, context, options) {
     if (missing) {
         skipped.add(stage.id);
         return {
-            result: {
+            result: annotateRerun({
                 ...base,
                 status: 'blocked',
                 reason: `missing context.${missing}`,
-            },
+            }),
             nextContext: context,
         };
     }
-    let nextContext = context;
     if (stage.pipeline_file && options.repoRoot) {
         try {
             const nested = resolveSubPipeline(options.repoRoot, stage.pipeline_file, stage.pipeline);
@@ -47800,11 +47877,11 @@ function simulateStage(stage, wave, skipped, github, context, options) {
             if (failed) {
                 skipped.add(stage.id);
                 return {
-                    result: {
+                    result: annotateRerun({
                         ...base,
                         status: 'blocked',
                         reason: `sub-pipeline ${failed.id} ${failed.status}`,
-                    },
+                    }),
                     nextContext: context,
                 };
             }
@@ -47812,20 +47889,38 @@ function simulateStage(stage, wave, skipped, github, context, options) {
         catch (error) {
             skipped.add(stage.id);
             return {
-                result: {
+                result: annotateRerun({
                     ...base,
                     status: 'blocked',
                     reason: error instanceof Error ? error.message : 'invalid sub-pipeline',
-                },
+                }),
                 nextContext: context,
             };
         }
     }
+    let rerun;
+    let outputValues;
+    if (smartRerunEnabled(pipeline, options)) {
+        const cfg = options.smartRerun;
+        const ref = cfg.ref ?? String(github.ref ?? 'refs/heads/master');
+        const inputs = resolveStageInputs(stage.inputs, context);
+        const fingerprint = stageFingerprint(stage, inputs, ref, workflowDigestForSimulate(stage, options.repoRoot));
+        const previous = cfg.previousState.stages[stage.id];
+        if (canReuseStage(previous, fingerprint, stage.outputs)) {
+            rerun = 'reuse';
+            outputValues = previous.outputs;
+        }
+        else {
+            rerun = 'dispatch';
+        }
+    }
+    let nextContext = context;
     if (stage.outputs?.length) {
-        nextContext = mergeContext(context, stage.id, Object.fromEntries(stage.outputs.map((key) => [key, ''])));
+        const values = Object.fromEntries(stage.outputs.map((key) => [key, outputValues?.[key] ?? '']));
+        nextContext = mergeContext(context, stage.id, values);
     }
     return {
-        result: { ...base, status: 'run' },
+        result: annotateRerun({ ...base, status: 'run', rerun }),
         nextContext,
     };
 }
@@ -47839,7 +47934,7 @@ function simulatePipeline(pipeline, options = {}) {
         const wave = waves[waveIndex];
         const waveNum = waveIndex + 1;
         for (const stage of wave) {
-            const { result, nextContext } = simulateStage(stage, waveNum, skipped, github, context, options);
+            const { result, nextContext } = simulateStage(pipeline, stage, waveNum, skipped, github, context, options);
             context = nextContext;
             results.push(result);
         }
@@ -47849,6 +47944,7 @@ function simulatePipeline(pipeline, options = {}) {
 function formatSimulateReport(results) {
     const lines = ['Simulation (no workflows dispatched):', ''];
     let currentWave = 0;
+    const showRerun = results.some((stage) => stage.rerun != null);
     for (const stage of results) {
         if (stage.wave !== currentWave) {
             currentWave = stage.wave;
@@ -47858,7 +47954,8 @@ function formatSimulateReport(results) {
             ? `${stage.repo} → ${stage.workflow ?? stage.pipeline_file}`
             : (stage.workflow ?? stage.pipeline_file ?? stage.id);
         const suffix = stage.reason ? ` — ${stage.reason}` : '';
-        lines.push(`    ${stage.status.padEnd(7)} ${stage.id} → ${target}${suffix}`);
+        const rerunCol = showRerun ? ` ${(stage.rerun ?? '').padEnd(8)}` : '';
+        lines.push(`    ${stage.status.padEnd(7)}${rerunCol} ${stage.id} → ${target}${suffix}`);
     }
     return lines.join('\n');
 }
@@ -48525,46 +48622,6 @@ async function collectRepoAccessIssues(slugs, token) {
         }
     }
     return issues;
-}
-
-// EXTERNAL MODULE: external "node:crypto"
-var external_node_crypto_ = __nccwpck_require__(7598);
-;// CONCATENATED MODULE: ../core/dist/lib/smart-rerun.js
-
-const RERUN_STATE_ARTIFACT = 'pipeline-compose-rerun-state';
-function stageFingerprint(stage, inputs, ref, workflowDigest) {
-    const normalizedRef = ref.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '');
-    const payload = JSON.stringify({
-        id: stage.id,
-        workflow: stage.workflow ?? stage.pipeline_file ?? '',
-        repo: stage.repo ?? '',
-        ref: normalizedRef,
-        when: stage.when ?? '',
-        workflow_digest: workflowDigest ?? '',
-        inputs: Object.fromEntries(Object.entries(inputs).sort(([a], [b]) => a.localeCompare(b))),
-    });
-    return createHash('sha256').update(payload).digest('hex').slice(0, 16);
-}
-function parseRerunState(raw) {
-    try {
-        const parsed = JSON.parse(raw);
-        if (parsed?.version !== 1 || typeof parsed.stages !== 'object') {
-            return null;
-        }
-        return parsed;
-    }
-    catch {
-        return null;
-    }
-}
-function canReuseStage(previous, fingerprint, declaredOutputs) {
-    if (!previous || previous.fingerprint !== fingerprint) {
-        return false;
-    }
-    if (!declaredOutputs?.length) {
-        return true;
-    }
-    return declaredOutputs.every((key) => previous.outputs[key] != null);
 }
 
 ;// CONCATENATED MODULE: ../core/dist/import/render-import.js
