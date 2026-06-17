@@ -47352,7 +47352,47 @@ function deprecations_collectDeprecationIssues(pipeline, repoRoot) {
     return issues;
 }
 
+;// CONCATENATED MODULE: ../core/dist/compile/validate-policy.js
+
+function parseValidatePolicy(raw) {
+    if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error('Validate policy must be a JSON object');
+    }
+    const doc = raw;
+    const policy = {};
+    if (doc.allow !== undefined) {
+        if (!Array.isArray(doc.allow) || !doc.allow.every((code) => typeof code === 'string')) {
+            throw new Error('policy.allow must be an array of issue code strings');
+        }
+        policy.allow = [...doc.allow];
+    }
+    if (doc.deny !== undefined) {
+        if (!Array.isArray(doc.deny) || !doc.deny.every((code) => typeof code === 'string')) {
+            throw new Error('policy.deny must be an array of issue code strings');
+        }
+        policy.deny = [...doc.deny];
+    }
+    if (!policy.allow?.length && !policy.deny?.length) {
+        throw new Error('Validate policy must include allow and/or deny code lists');
+    }
+    return policy;
+}
+function loadValidatePolicyFromFile(filePath) {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return parseValidatePolicy(JSON.parse(raw));
+}
+function validate_policy_applyValidatePolicy(issues, policy) {
+    const allow = new Set(policy.allow ?? []);
+    const deny = new Set(policy.deny ?? []);
+    return issues
+        .filter((issue) => !allow.has(issue.code))
+        .map((issue) => deny.has(issue.code) && issue.level === 'warn'
+        ? { ...issue, level: 'error' }
+        : issue);
+}
+
 ;// CONCATENATED MODULE: ../core/dist/compile/validate-report.js
+
 
 
 
@@ -47649,15 +47689,19 @@ function buildValidateReport(pipeline, options = {}) {
             });
         }
     }
+    let filtered = issues;
+    if (options.policy) {
+        filtered = applyValidatePolicy(filtered, options.policy);
+    }
     if (options.strict) {
-        for (const issue of issues) {
+        for (const issue of filtered) {
             // ponytail: informational global-lock reminder; not a graph defect
             if (issue.level === 'warn' && issue.code !== 'concurrency.global') {
                 issue.level = 'error';
             }
         }
     }
-    return { pipeline, issues };
+    return { pipeline, issues: filtered };
 }
 function formatPipelineTree(pipeline) {
     const lines = [];
@@ -48637,6 +48681,7 @@ function renderImportedPipelineYaml(pipelineName, stages) {
 }
 
 ;// CONCATENATED MODULE: ../core/dist/index.js
+
 
 
 

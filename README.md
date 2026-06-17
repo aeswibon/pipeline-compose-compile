@@ -21,14 +21,14 @@ You typically pick **run OR compile**, not both for the same pipeline.
 
 ## How it works
 
-```text
-.github/pipelines/pipeline.yml   (you edit this — order + stages)
-              ↓
-    pipeline-compose-compile
-              ↓
-.github/workflows/pipeline-generated.yml   (generated jobs + needs:)
-              ↓
-    GitHub runs the generated file like any workflow
+```mermaid
+flowchart TD
+  src[".github/pipelines/pipeline.yml<br/>(you edit)"]
+  compile["pipeline-compose-compile"]
+  gen[".github/workflows/pipeline-generated.yml<br/>(jobs + needs:)"]
+  gha["GitHub Actions"]
+
+  src --> compile --> gen --> gha
 ```
 
 With **`check: true`**, CI fails if someone edits the generated file without recompiling — keeps YAML in sync.
@@ -50,7 +50,7 @@ With **`check: true`**, CI fails if someone edits the generated file without rec
 **One-off generate:**
 
 ```yaml
-- uses: aeswibon/pipeline-compose-compile@v1.15.0
+- uses: aeswibon/pipeline-compose-compile@v1.16.0
   with:
     pipeline_file: .github/pipelines/pipeline.yml
     output: .github/workflows/pipeline-generated.yml
@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: aeswibon/pipeline-compose-compile@v1.15.0
+      - uses: aeswibon/pipeline-compose-compile@v1.16.0
         with:
           pipeline_file: .github/pipelines/pipeline.yml
           output: .github/workflows/pipeline-generated.yml
@@ -76,7 +76,7 @@ Example: [compile-check](https://github.com/aeswibon/pipeline-compose/tree/maste
 
 <!-- start usage -->
 ```yaml
-- uses: aeswibon/pipeline-compose-compile@v1.15.0
+- uses: aeswibon/pipeline-compose-compile@v1.16.0
   with:
     pipeline_file: .github/pipelines/pipeline.yml
     output: .github/workflows/pipeline-generated.yml
