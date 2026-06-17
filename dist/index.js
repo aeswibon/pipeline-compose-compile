@@ -46569,18 +46569,11 @@ function collectCatalogStageIssues(stages, catalog) {
         return issues;
     }
     for (const [key, entry] of Object.entries(catalog)) {
-        if (!entry.workflow && !entry.pipeline_file) {
+        if (!entry.workflow && !entry.pipeline_file && !entry.run) {
             issues.push({
                 level: 'error',
                 code: 'catalog.invalid-entry',
-                message: `Catalog entry "${key}" must set workflow or pipeline_file`,
-            });
-        }
-        if (entry.workflow && entry.pipeline_file) {
-            issues.push({
-                level: 'error',
-                code: 'catalog.invalid-entry',
-                message: `Catalog entry "${key}" cannot set both workflow and pipeline_file`,
+                message: `Catalog entry "${key}" must set workflow, pipeline_file, or run`,
             });
         }
         if ('use' in entry && entry.use) {
@@ -46979,7 +46972,7 @@ function concurrencyFromCodegen(concurrency, fallbackGroup) {
 
 
 const DEFAULT_WORKFLOW_OUTPUT = '.github/workflows/pipeline.yml';
-const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.10.0';
+const DEFAULT_COMPILE_ACTION = 'aeswibon/pipeline-compose-compile@v1.17.0';
 const DEFAULT_BRANCH = 'master';
 const DEFAULT_TAG_PREFIX = 'v';
 function normalizeWorkflowPath(workflow) {
@@ -48680,7 +48673,314 @@ function renderImportedPipelineYaml(pipelineName, stages) {
     return YAML.stringify(doc).trimEnd() + '\n';
 }
 
+;// CONCATENATED MODULE: external "node:child_process"
+const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
+;// CONCATENATED MODULE: ../core/dist/compile/local.js
+
+
+
+
+
+function resolveRepoDir(stage, opts) {
+    return stage.repo
+        ? path.join(opts.workspace, stage.repo)
+        : opts.repoRoot;
+}
+function resolveInputValue(value, ctx) {
+    return value.replace(/\$\{\{\s*context\.([a-z0-9-]+)\.([a-z0-9_]+)\s*\}\}/gi, (_, stageId, key) => ctx[stageId]?.[key] ?? '');
+}
+function local_resolveStageInputs(inputs, ctx) {
+    if (!inputs)
+        return {};
+    const resolved = {};
+    for (const [key, value] of Object.entries(inputs)) {
+        resolved[key] = resolveInputValue(value, ctx);
+    }
+    return resolved;
+}
+function readArtifactOutput(artifactDir, stageId) {
+    const artifactZip = path.join(artifactDir, `pipeline-compose-${stageId}.zip`);
+    if (!fs.existsSync(artifactZip))
+        return null;
+    const extractDir = path.join(artifactDir, `.extract-${stageId}`);
+    fs.rmSync(extractDir, { recursive: true, force: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+    const unzipResult = spawnSync('unzip', ['-o', artifactZip, '-d', extractDir], { stdio: 'pipe' });
+    if (unzipResult.status !== 0)
+        return null;
+    const outputsPath = path.join(extractDir, 'pipeline-compose', 'outputs.json');
+    if (!fs.existsSync(outputsPath))
+        return null;
+    try {
+        const parsed = JSON.parse(fs.readFileSync(outputsPath, 'utf8'));
+        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            return parsed;
+        }
+    }
+    catch { /* malformed */ }
+    return null;
+}
+function checkCommand(cmd, hint) {
+    const result = spawnSync('which', [cmd], { stdio: 'pipe' });
+    if (result.status !== 0)
+        throw new Error(`${cmd} is required but not found. ${hint}`);
+}
+function checkWhen(stage, context) {
+    if (!stage.when)
+        return true;
+    return evaluateExpression(stage.when, {
+        github: {},
+        context: context,
+    });
+}
+function runActStage(stage, context, opts) {
+    const startTime = Date.now();
+    const repoDir = resolveRepoDir(stage, opts);
+    const workflowPath = stage.workflow ?? stage.pipeline_file;
+    const workflowFile = workflowPath ? path.join(repoDir, workflowPath) : null;
+    if (!workflowFile || !fs.existsSync(workflowFile)) {
+        return {
+            id: stage.id,
+            workflow: workflowPath ?? 'unknown',
+            repo: stage.repo,
+            status: 'failure',
+            outputs: {},
+            durationMs: Date.now() - startTime,
+        };
+    }
+    if (!checkWhen(stage, context)) {
+        return { id: stage.id, workflow: workflowPath ?? '', repo: stage.repo, status: 'skipped', outputs: {}, durationMs: 0 };
+    }
+    const resolvedInputs = local_resolveStageInputs(stage.inputs, context);
+    const eventJson = JSON.stringify({ inputs: resolvedInputs });
+    fs.mkdirSync(opts.artifactDir, { recursive: true });
+    const eventFile = path.join(opts.artifactDir, `.event-${stage.id}.json`);
+    fs.writeFileSync(eventFile, eventJson);
+    const proc = spawnSync(opts.actBinary, [
+        'workflow_dispatch',
+        '-W', workflowFile,
+        '-e', eventFile,
+        '-P', `ubuntu-latest=${opts.containerImage}`,
+        '--artifact-server-path', opts.artifactDir,
+        '--no-reuse-container',
+    ], {
+        cwd: repoDir,
+        stdio: 'pipe',
+        timeout: 600_000,
+    });
+    const durationMs = Date.now() - startTime;
+    fs.rmSync(eventFile, { force: true });
+    if (proc.status !== 0) {
+        const stderr = proc.stderr?.toString().trim() ?? '';
+        console.error(`  act failed for stage "${stage.id}": ${stderr || 'exit code ' + proc.status}`);
+        return { id: stage.id, workflow: workflowPath ?? '', repo: stage.repo, status: 'failure', outputs: {}, durationMs };
+    }
+    const outputs = readArtifactOutput(opts.artifactDir, stage.id) ?? {};
+    return { id: stage.id, workflow: workflowPath ?? '', repo: stage.repo, status: 'success', outputs, durationMs };
+}
+function resolveContextRefs(cmd, context) {
+    return cmd.replace(/\$\{\{\s*context\.([a-z0-9-]+)\.([a-z0-9_]+)\s*\}\}/gi, (_, stageId, key) => context[stageId]?.[key] ?? '');
+}
+function runShellStage(stage, context, opts) {
+    const startTime = Date.now();
+    const runCmd = stage.run;
+    if (!checkWhen(stage, context)) {
+        return { id: stage.id, workflow: runCmd, repo: stage.repo, status: 'skipped', outputs: {}, durationMs: 0 };
+    }
+    const resolvedCmd = resolveContextRefs(runCmd, context);
+    const outputsPath = path.join(opts.artifactDir, `${stage.id}-outputs.json`);
+    fs.mkdirSync(opts.artifactDir, { recursive: true });
+    const proc = spawnSync('/bin/sh', ['-c', resolvedCmd], {
+        cwd: opts.repoRoot,
+        stdio: 'inherit',
+        timeout: 600_000,
+        env: {
+            ...process.env,
+            PIPELINE_COMPOSE_OUTPUTS: outputsPath,
+            PIPELINE_COMPOSE_STAGE_ID: stage.id,
+        },
+    });
+    const durationMs = Date.now() - startTime;
+    const outputs = {};
+    if (proc.status === 0 && fs.existsSync(outputsPath)) {
+        try {
+            const parsed = JSON.parse(fs.readFileSync(outputsPath, 'utf8'));
+            if (typeof parsed === 'object' && parsed !== null) {
+                Object.assign(outputs, parsed);
+            }
+        }
+        catch { /* malformed outputs */ }
+        fs.rmSync(outputsPath, { force: true });
+    }
+    return {
+        id: stage.id,
+        workflow: runCmd,
+        repo: stage.repo,
+        status: proc.status === 0 ? 'success' : 'failure',
+        outputs,
+        durationMs,
+    };
+}
+function formatLocalRunResult(result) {
+    const lines = [];
+    lines.push('');
+    lines.push('  pipeline-compose local — results');
+    lines.push('  ────────────────────────────────');
+    lines.push('');
+    for (const stage of result.stages) {
+        const icon = stage.status === 'success' ? ' ✓'
+            : stage.status === 'skipped' ? ' −'
+                : ' ✗';
+        lines.push(`  ${icon}  ${stage.id}`);
+        lines.push(`       action: ${stage.workflow}`);
+        if (stage.repo)
+            lines.push(`       repo: ${stage.repo}`);
+        lines.push(`       status: ${stage.status}`);
+        lines.push(`       duration: ${formatDuration(stage.durationMs)}`);
+        const keys = Object.keys(stage.outputs);
+        if (keys.length > 0) {
+            lines.push(`       outputs: ${keys.join(', ')}`);
+        }
+        lines.push('');
+    }
+    const passed = result.stages.filter((s) => s.status === 'success').length;
+    const failed = result.stages.filter((s) => s.status === 'failure').length;
+    const skipped = result.stages.filter((s) => s.status === 'skipped').length;
+    lines.push(`  Result: ${result.success ? 'PASS' : 'FAIL'}  (${passed} passed, ${failed} failed, ${skipped} skipped)`);
+    return lines.join('\n');
+}
+function formatDuration(ms) {
+    if (ms < 1000)
+        return `${ms}ms`;
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60);
+    if (m === 0)
+        return `${s}s`;
+    return `${m}m ${s % 60}s`;
+}
+function runPipelineLocal(pipeline, repoRoot, workspace, actBinary, artifactDir, containerImage) {
+    const opts = { repoRoot, workspace, actBinary, artifactDir, containerImage };
+    fs.mkdirSync(opts.artifactDir, { recursive: true });
+    const needsAct = pipeline.stages.some((s) => !s.run);
+    const needsUnzip = pipeline.stages.some((s) => !s.run);
+    if (needsAct) {
+        checkCommand(opts.actBinary, 'Install it via: brew install act  (or https://github.com/nektos/act)');
+    }
+    if (needsUnzip) {
+        checkCommand('unzip', 'Install via: brew install unzip');
+    }
+    const waves = groupStagesIntoWaves(pipeline.stages);
+    const results = [];
+    let context = {};
+    let success = true;
+    for (const wave of waves) {
+        for (const stage of wave) {
+            const result = stage.run
+                ? runShellStage(stage, context, opts)
+                : runActStage(stage, context, opts);
+            results.push(result);
+            if (result.status === 'success' && Object.keys(result.outputs).length > 0) {
+                context = mergeContext(context, stage.id, result.outputs);
+            }
+            if (result.status === 'failure') {
+                success = false;
+            }
+        }
+        if (!success)
+            break;
+    }
+    return { stages: results, success };
+}
+
+;// CONCATENATED MODULE: ../core/dist/lib/pipeline-state.js
+
+
+const STATE_DIR = '.pipeline-compose/state';
+function safeName(name) {
+    return name.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 120);
+}
+function stateFileName(pipelineName, runId) {
+    return `${safeName(pipelineName)}-${safeName(runId)}.json`;
+}
+function savePipelineState(baseDir, record) {
+    const dir = path.join(baseDir, STATE_DIR);
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, stateFileName(record.pipelineName, record.runId));
+    fs.writeFileSync(filePath, JSON.stringify(record, null, 2));
+    return filePath;
+}
+function loadPipelineState(baseDir, pipelineName, runId) {
+    const filePath = path.join(baseDir, STATE_DIR, stateFileName(pipelineName, runId));
+    if (!fs.existsSync(filePath))
+        return null;
+    try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (parsed?.version !== 1 || !parsed.pipelineName || !parsed.runId)
+            return null;
+        return parsed;
+    }
+    catch {
+        return null;
+    }
+}
+function listPipelineStates(baseDir, pipelineName) {
+    const dir = path.join(baseDir, STATE_DIR);
+    if (!fs.existsSync(dir))
+        return [];
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    const records = [];
+    for (const file of files) {
+        if (pipelineName && !file.startsWith(safeName(pipelineName)))
+            continue;
+        try {
+            const parsed = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+            if (parsed?.version === 1)
+                records.push(parsed);
+        }
+        catch { /* skip corrupt */ }
+    }
+    return records.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+}
+function formatPipelineState(record) {
+    const lines = [];
+    lines.push('');
+    lines.push(`  pipeline: ${record.pipelineName}`);
+    lines.push(`  run:      ${record.runId}`);
+    lines.push(`  started:  ${record.startedAt}`);
+    if (record.completedAt)
+        lines.push(`  ended:    ${record.completedAt}`);
+    lines.push(`  result:   ${record.success ? 'PASS' : 'FAIL'}`);
+    lines.push('');
+    lines.push('  stages:');
+    for (const s of record.stages) {
+        const icon = s.status === 'success' ? ' ✓' : s.status === 'skipped' ? ' −' : ' ✗';
+        const dur = pipeline_state_formatDuration(s.durationMs);
+        lines.push(`   ${icon}  ${s.id}  (${s.status}, ${dur})`);
+        if (s.repo)
+            lines.push(`         repo: ${s.repo}`);
+        const keys = Object.keys(s.outputs);
+        if (keys.length > 0)
+            lines.push(`         outputs: ${keys.join(', ')}`);
+    }
+    lines.push('');
+    return lines.join('\n');
+}
+function pipeline_state_formatDuration(ms) {
+    if (ms < 1000)
+        return `${ms}ms`;
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60);
+    if (m === 0)
+        return `${s}s`;
+    return `${m}m ${s % 60}s`;
+}
+function stageFingerprintFromState(stage) {
+    return stage.fingerprint;
+}
+
 ;// CONCATENATED MODULE: ../core/dist/index.js
+
+
 
 
 
